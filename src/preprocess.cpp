@@ -479,7 +479,7 @@ void Preprocess::mid360_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &
   pl_corn.clear();
   pl_full.clear();
 
-  pcl::PointCloud<livox_ros::LivoxPointXyzitl> pl_orig;
+  pcl::PointCloud<livox_ros::LivoxPointXyzitlt> pl_orig;
   pcl::fromROSMsg(*msg, pl_orig);
   int plsize = pl_orig.points.size();
   if (plsize == 0)
@@ -494,60 +494,23 @@ void Preprocess::mid360_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &
   std::vector<float> time_last(N_SCANS, 0.0);  // last offset time
   /*****************************************************************/
 
-  given_offset_time = false;
-  double yaw_first = atan2(pl_orig.points[0].y, pl_orig.points[0].x) * 57.29578;
-  double yaw_end = yaw_first;
-  int layer_first = pl_orig.points[0].line;
-  for (uint i = plsize - 1; i > 0; i--)
-  {
-    if (pl_orig.points[i].line == layer_first)
-    {
-      yaw_end = atan2(pl_orig.points[i].y, pl_orig.points[i].x) * 57.29578;
-      break;
-    }
-  }
+  given_offset_time = true;
+  const double scan_start_time = pl_orig.points.front().timestamp;
 
   for (uint i = 0; i < plsize; ++i)
   {
-    PointType added_pt;
-    added_pt.normal_x = 0;
-    added_pt.normal_y = 0;
-    added_pt.normal_z = 0;
-    added_pt.x = pl_orig.points[i].x;
-    added_pt.y = pl_orig.points[i].y;
-    added_pt.z = pl_orig.points[i].z;
-    added_pt.intensity = pl_orig.points[i].intensity;
-    added_pt.curvature = 0.;
+      PointType added_pt;
+      added_pt.normal_x = 0;
+      added_pt.normal_y = 0;
+      added_pt.normal_z = 0;
+      added_pt.x = pl_orig.points[i].x;
+      added_pt.y = pl_orig.points[i].y;
+      added_pt.z = pl_orig.points[i].z;
+      added_pt.intensity = pl_orig.points[i].intensity;
 
-    int layer = pl_orig.points[i].line;
-    double yaw_angle = atan2(added_pt.y, added_pt.x) * 57.2957;
-
-    if (is_first[layer])
-    {
-      // printf("layer: %d; is first: %d", layer, is_first[layer]);
-      yaw_fp[layer] = yaw_angle;
-      is_first[layer] = false;
-      added_pt.curvature = 0.0;
-      yaw_last[layer] = yaw_angle;
-      time_last[layer] = added_pt.curvature;
-      continue;
-    }
-
-    // compute offset time
-    if (yaw_angle <= yaw_fp[layer])
-    {
-      added_pt.curvature = (yaw_fp[layer] - yaw_angle) / omega_l;
-    }
-    else
-    {
-      added_pt.curvature = (yaw_fp[layer] - yaw_angle + 360.0) / omega_l;
-    }
-
-    if (added_pt.curvature < time_last[layer])
-      added_pt.curvature += 360.0 / omega_l;
-
-    yaw_last[layer] = yaw_angle;
-    time_last[layer] = added_pt.curvature;
+      // Use Livox per-point timestamp
+      added_pt.curvature =
+        static_cast<float>((pl_orig.points[i].timestamp - scan_start_time) * 1e-6);
 
     if (added_pt.x * added_pt.x + added_pt.y * added_pt.y + added_pt.z * added_pt.z > (blind * blind))
     {

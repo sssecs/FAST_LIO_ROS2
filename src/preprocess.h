@@ -130,7 +130,8 @@ typedef struct {
   float intensity;    /**< Intensity   */
   uint8_t tag;        /**< Livox point tag   */
   uint8_t line;       /**< Laser line id     */
-} LivoxPointXyzitl;
+  double timestamp;
+} LivoxPointXyzitlt;
 }
 POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::LivoxPointXyzrtl,
     (float, x, x)
@@ -141,13 +142,14 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::LivoxPointXyzrtl,
     (uint8_t, line, line)
 )
 
-POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::LivoxPointXyzitl,
+POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros::LivoxPointXyzitlt,
     (float, x, x)
     (float, y, y)
     (float, z, z)
     (float, intensity, intensity)
     (uint8_t, tag, tag)
     (uint8_t, line, line)
+    (double, timestamp, timestamp)
 )
 
 class Preprocess
