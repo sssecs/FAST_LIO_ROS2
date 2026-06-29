@@ -57,6 +57,30 @@ def generate_launch_description():
         condition=IfCondition(rviz_use)
     )
 
+    base_2_livox = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='base_2_livox_tf',
+        arguments=[
+            '0', '0', '0',      # x y z translation
+            '0', '0', '3.14159265359',  # roll pitch yaw (rad)
+            'livox_frame',
+            'base_link'
+        ]
+    )
+
+    lidar_init_2_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='lidar_init_2_odom_tf',
+        arguments=[
+            '0', '0', '1.2',      # x y z translation
+            '0', '0', '3.14159265359',  # roll pitch yaw (rad)
+            'map',
+            'lidar_init'
+        ]
+    )
+
     ld = LaunchDescription()
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_config_path_cmd)
@@ -64,7 +88,9 @@ def generate_launch_description():
     ld.add_action(declare_rviz_cmd)
     ld.add_action(declare_rviz_config_path_cmd)
 
+    ld.add_action(base_2_livox)
+    ld.add_action(lidar_init_2_odom)
     ld.add_action(fast_lio_node)
-    ld.add_action(rviz_node)
+    # ld.add_action(rviz_node)
 
     return ld

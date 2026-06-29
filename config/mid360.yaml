@@ -39,12 +39,18 @@
         publish:
             path_en: true                # true: publish Path
             effect_map_en: false         # true: publish Effects
-            map_en: true                 # true: publish Map cloud
-            scan_publish_en:  true       # false: close all the point cloud output
+            map_en: false                 # true: publish Map cloud
+            scan_publish_en:  false       # false: close all the point cloud output
             dense_publish_en: false      # false: low down the points number in a global-frame point clouds scan.
-            scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+            scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body-frame
 
         pcd_save:
             pcd_save_en: true
             interval: -1                 # how many LiDAR frames saved in each pcd file; 
                                         # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+        localization:
+            enable_localization: true
+            enable_map_incremental: false
+            leaf_size: 0.2
+            map_path: "/mnt/hdd/maps/2nd_floor/pc/localization_cloud.pcd"
