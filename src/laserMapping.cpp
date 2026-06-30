@@ -62,6 +62,7 @@
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
@@ -138,7 +139,7 @@ M3D Lidar_R_wrt_IMU(Eye3d);
 
 /*** EKF inputs and output ***/
 MeasureGroup Measures;
-esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
+std::unique_ptr<esekfom::esekf<state_ikfom, 12, input_ikfom>> kf;
 state_ikfom state_point;
 vect3 pos_lid;
 
@@ -639,7 +640,7 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
     pubOdomAftMapped->publish(odomAftMapped);
-    auto P = kf.get_P();
+    auto P = kf->get_P();
     for (int i = 0; i < 6; i ++)
     {
         int k = i < 3 ? i + 3 : i - 3;
@@ -886,7 +887,9 @@ public:
         this->get_parameter_or<bool>("localization.enable_localization", enable_localization, false);
         this->get_parameter_or<bool>("localization.enable_map_incremental", enable_map_incremental, true);
 
-        
+        init_pose_.pose.pose.position.x = 0.0;
+        init_pose_.pose.pose.position.y = 0.0;
+        init_pose_.pose.pose.position.z = 0.0;
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
 
@@ -909,17 +912,6 @@ public:
         downSizeFilterMap.setLeafSize(filter_size_map_min, filter_size_map_min, filter_size_map_min);
         memset(point_selected_surf, true, sizeof(point_selected_surf));
         memset(res_last, -1000.0f, sizeof(res_last));
-
-        Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
-        Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
-        p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
-        p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
-        p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
-        p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
-        p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
-
-        fill(epsi, epsi+23, 0.001);
-        kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
         //load the localization map
         if (enable_localization)
@@ -957,6 +949,9 @@ public:
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+        sub_init_pose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>("/initialpose", 10, std::bind(&LaserMappingNode::initial_pose_callback, this, std::placeholders::_1)
+);
+
         publish_map(pubLaserCloudMap_);
 
         //------------------------------------------------------------------------------------------------------
@@ -984,19 +979,32 @@ private:
     {
         if(sync_packages(Measures))
         {
-            double this_time = omp_get_wtime();
-            RCLCPP_INFO(
-                this->get_logger(),
-                "Process again after %.6f ms",
-                (this_time - last_time) * 1000.0
-            );
-            last_time = this_time;
+            // double this_time = omp_get_wtime();
+            // RCLCPP_INFO(
+            //     this->get_logger(),
+            //     "Process again after %.6f ms",
+            //     (this_time - last_time) * 1000.0
+            // );
+            // last_time = this_time;
             
-            if (flg_first_scan)
+            if (initial_pose_set_.load())
             {
+                p_imu->Reset();
+                Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
+                Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
+                p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
+                p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
+                p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
+                p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
+                p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
+
+                kf = std::make_unique<esekfom::esekf<state_ikfom, 12, input_ikfom>>();
+                fill(epsi, epsi+23, 0.001);
+                kf->init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
+                this->set_initial_localization(init_pose_);
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
-                flg_first_scan = false;
+                initial_pose_set_.store(false);;
                 return;
             }
 
@@ -1009,8 +1017,8 @@ private:
             svd_time   = 0;
             t0 = omp_get_wtime();
 
-            p_imu->Process(Measures, kf, feats_undistort);
-            state_point = kf.get_x();
+            p_imu->Process(Measures, *kf, feats_undistort);
+            state_point = kf->get_x();
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
@@ -1083,8 +1091,8 @@ private:
             /*** iterated state estimation ***/
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
-            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
-            state_point = kf.get_x();
+            kf->update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
+            state_point = kf->get_x();
             euler_cur = SO3ToEuler(state_point.rot);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
             geoQuat.x = state_point.rot.coeffs()[0];
@@ -1140,11 +1148,11 @@ private:
                 <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
                 dump_lio_state_to_log(fp);
             }
-            RCLCPP_INFO(
-                this->get_logger(),
-                "Total scan processing time: %.6f ms",
-                (t5 - t0) * 1000.0
-            );
+            // RCLCPP_INFO(
+            //     this->get_logger(),
+            //     "Total scan processing time: %.6f ms",
+            //     (t5 - t0) * 1000.0
+            // );
         }
     }
 
@@ -1248,6 +1256,69 @@ private:
         RCLCPP_INFO(this->get_logger(), "Loaded GlobalMap from %s!", localization_map_path.c_str());
     } 
 
+
+    void set_initial_localization (const geometry_msgs::msg::PoseWithCovarianceStamped& input_init)
+    {
+        Eigen::Matrix3d R;
+        R << 1.0,  0.0,  0.0,
+            0.0, -1.0,  0.0,
+            0.0,  0.0, -1.0;
+
+        const auto& pos = input_init.pose.pose.position;
+        Eigen::Vector3d p_map(pos.x, pos.y, pos.z);
+
+        Eigen::Vector3d p_lidar = R * p_map;
+
+        const auto& ori = input_init.pose.pose.orientation;
+        Eigen::Quaterniond q_map(ori.w, ori.x, ori.y, ori.z);
+
+        Eigen::Quaterniond q_rot(0.0, 1.0, 0.0, 0.0); // w,x,y,z
+        Eigen::Quaterniond q_lidar = invertYaw(q_map);
+        q_lidar.normalize();
+
+        p_lidar[2] = -1.2;
+
+        RCLCPP_INFO(this->get_logger(),
+            "Init pose: pos=(%.3f, %.3f, %.3f), "
+            "quat=(%.4f, %.4f, %.4f, %.4f)",
+            p_lidar.x(), p_lidar.y(), p_lidar.z(),
+            q_lidar.x(), q_lidar.y(), q_lidar.z(), q_lidar.w());
+
+        auto init_state = kf->get_x();
+        init_state.rot = MTK::SO3(q_lidar);
+        init_state.pos = p_lidar;
+        kf->change_x(init_state);
+    }
+
+    Eigen::Quaterniond invertYaw(const Eigen::Quaterniond& q_in) {
+        // 1. 将四元数转为旋转矩阵，提取偏航角 (Yaw)
+        // 标准旋转矩阵 R = R_z(yaw) * R_y(pitch) * R_x(roll)
+        // 此时 yaw = atan2(R(1,0), R(0,0))
+        Eigen::Matrix3d R = q_in.toRotationMatrix();
+        double yaw = std::atan2(R(1, 0), R(0, 0));
+
+        // 2. 构造绕 Z 轴旋转 (-2 * yaw) 的修正四元数
+        Eigen::Quaterniond q_correction(
+            Eigen::AngleAxisd(-2.0 * yaw, Eigen::Vector3d::UnitZ())
+        );
+
+        // 3. 左乘原四元数 (矩阵乘法)
+        Eigen::Quaterniond q_out = q_correction * q_in;
+        q_out.normalize(); // 防止累积数值误差
+
+        return q_out;
+    }
+
+    void initial_pose_callback(
+    const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
+    {
+        init_pose_ = *msg;
+        initial_pose_set_.store(true);
+
+        RCLCPP_INFO(this->get_logger(), "Initial pose received from Rviz and applied.");
+    }
+
+
 private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body_;
@@ -1259,6 +1330,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr sub_pcl_livox_;
 
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_init_pose_;
+
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr map_pub_timer_;
@@ -1269,6 +1342,10 @@ private:
     double deltaT, deltaR, aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0, aver_time_incre = 0, aver_time_solve = 0, aver_time_const_H_time = 0;
     bool flg_EKF_converged, EKF_stop_flg = 0;
     double epsi[23] = {0.001};
+
+    std::atomic<bool> initial_pose_set_{true};
+
+    geometry_msgs::msg::PoseWithCovarianceStamped init_pose_;
 
     FILE *fp;
     ofstream fout_pre, fout_out, fout_dbg;

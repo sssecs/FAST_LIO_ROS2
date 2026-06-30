@@ -52,5 +52,5 @@
         localization:
             enable_localization: true
             enable_map_incremental: false
-            leaf_size: 0.2
+            leaf_size: 0.05
             map_path: "/mnt/hdd/maps/2nd_floor/pc/localization_cloud.pcd"
