@@ -57,15 +57,15 @@ def generate_launch_description():
         condition=IfCondition(rviz_use)
     )
 
-    lidar_init_2_odom = Node(
+    lidar_to_base = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
-        name='lidar_init_2_odom_tf',
+        name='lidar_to_base_tf',
         arguments=[
             '0', '0', '0',
             '0', '0', '3.14159265359',
-            'map',
-            'lidar_init'
+            'base_link',
+            'livox_frame'
         ]
     )
 
@@ -75,7 +75,7 @@ def generate_launch_description():
     ld.add_action(declare_config_file_cmd)
     ld.add_action(declare_rviz_cmd)
     ld.add_action(declare_rviz_config_path_cmd)
-    ld.add_action(lidar_init_2_odom)
+    ld.add_action(lidar_to_base)
     ld.add_action(fast_lio_node)
     # ld.add_action(rviz_node)
 
