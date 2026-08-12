@@ -92,6 +92,7 @@ ament_export_dependencies(rosidl_default_runtime)
 add_executable(fastlio_mapping
   src/main.cpp
   src/laser_mapping.cpp
+  src/laser_mapping_core.cpp
   src/preprocess.cpp
   src/IMU_Processing.cpp
   src/open3d_localizer.cpp

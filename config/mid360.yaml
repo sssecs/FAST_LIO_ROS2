@@ -1,7 +1,7 @@
 /**:
     ros__parameters:
         max_iteration: 3
-        filter_size_surf: 0.05
+        filter_size_surf: 0.3
         filter_size_map: 0.3
         cube_side_length: 1000.0
         runtime_pos_log_enable: false
