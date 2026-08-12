@@ -11,6 +11,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <thread>
 
@@ -35,6 +36,35 @@ constexpr float MOV_THRESHOLD = 1.5f;
 // The esekfom library stores the measurement model as a raw function pointer,
 // so the node instance is reached through this single file-local pointer.
 fast_lio::LaserMappingNode * g_mapping_node = nullptr;
+
+// Convert a FAST_LIO scan (PointXYZINormal, base_link frame) to the plain
+// PointXYZ cloud the Open3D relocalizer expects.
+pcl::PointCloud<pcl::PointXYZ>::Ptr to_point_xyz(const PointCloudXYZI::Ptr & cloud)
+{
+  auto out = std::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
+  out->reserve(cloud->size());
+  for (const auto & p : cloud->points)
+  {
+    out->push_back(pcl::PointXYZ(p.x, p.y, p.z));
+  }
+  return out;
+}
+
+// Build the initial guess T_map_base from an RViz "2D Pose Estimate" message.
+// The click is 2D: z is forced to the configured init_z height.
+Eigen::Matrix4d initial_pose_to_matrix(
+  const geometry_msgs::msg::PoseWithCovarianceStamped & pose, double init_z)
+{
+  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+  const auto & p = pose.pose.pose.position;
+  const auto & q = pose.pose.pose.orientation;
+  Eigen::Quaterniond quat(q.w, q.x, q.y, q.z);
+  T.block<3, 3>(0, 0) = quat.toRotationMatrix();
+  T(0, 3) = p.x;
+  T(1, 3) = p.y;
+  T(2, 3) = init_z;
+  return T;
+}
 }  // namespace
 
 namespace fast_lio
@@ -57,6 +87,10 @@ LaserMappingNode::LaserMappingNode(const rclcpp::NodeOptions & options)
   init_pose_.pose.pose.position.x = 0.0;
   init_pose_.pose.pose.position.y = 0.0;
   init_pose_.pose.pose.position.z = 0.0;
+
+  // Localization mode waits for the operator's first /initialpose before doing
+  // anything; mapping mode self-starts from the origin on the first scan.
+  initial_pose_set_.store(!params_.enable_localization);
 
   RCLCPP_INFO(
     this->get_logger(), "lidar topic: %s, imu topic: %s, frames: %s <- %s -> %s",
@@ -240,6 +274,7 @@ void LaserMappingNode::load_params()
   this->declare_parameter<std::string>("map_file_path", "./test.pcd");
   // logging
   this->declare_parameter<bool>("runtime_pos_log_enable", false);
+  this->declare_parameter<bool>("debug_time_usage", false);
   // localization
   this->declare_parameter<bool>("localization.enable_localization", false);
   this->declare_parameter<bool>("localization.enable_map_incremental", true);
@@ -248,6 +283,34 @@ void LaserMappingNode::load_params()
   this->declare_parameter<double>("localization.init_z", 1.2);
   this->declare_parameter<double>("localization.tf_lookup_timeout", 5.0);
   this->declare_parameter<std::string>("localization.initial_pose_topic", "/initialpose");
+  // Open3D relocalization
+  this->declare_parameter<bool>("localization.relocalization.enable", true);
+  this->declare_parameter<double>("localization.relocalization.voxel_size", 0.2);
+  this->declare_parameter<double>("localization.relocalization.map_voxel_size", 0.2);
+  this->declare_parameter<std::vector<double>>("localization.relocalization.scale", std::vector<double>{1.0, 4.0, 6.0});
+  this->declare_parameter<int>("localization.relocalization.icp_method", 1);
+  this->declare_parameter<int>("localization.relocalization.icp_iteration", 30);
+  this->declare_parameter<bool>("localization.relocalization.use_fpfh", true);
+  this->declare_parameter<int>("localization.relocalization.ransac_max_iteration", 100000);
+  this->declare_parameter<bool>("localization.relocalization.mutual_filter", true);
+  this->declare_parameter<bool>("localization.relocalization.statistical_filter", true);
+  this->declare_parameter<int>("localization.relocalization.filter_neighbors", 50);
+  this->declare_parameter<double>("localization.relocalization.filter_std_ratio", 3.0);
+  this->declare_parameter<double>("localization.relocalization.crop_radius", 60.0);
+  this->declare_parameter<double>("localization.relocalization.min_fitness", 0.5);
+  this->declare_parameter<double>("localization.relocalization.max_translation_delta", 5.0);
+  this->declare_parameter<double>("localization.relocalization.max_rotation_delta", 0.785);
+  // Localization failure detection (needs declare_parameter — the node is created
+  // with default NodeOptions, so yaml overrides are not auto-declared and a bare
+  // get_parameter would silently keep the struct defaults).
+  this->declare_parameter<bool>("localization.failure_detect_en", true);
+  this->declare_parameter<double>("localization.max_pose_to_map_dist", 3.0);
+  this->declare_parameter<double>("localization.max_pose_speed", 3.0);
+  // Post-relocalization fly-away guard.
+  this->declare_parameter<bool>("localization.relocalization_verify_en", true);
+  this->declare_parameter<double>("localization.relocalization_verify_window", 2.0);
+  this->declare_parameter<double>("localization.relocalization_verify_max_drift", 1.0);
+  this->declare_parameter<double>("localization.relocalization_verify_max_path", 2.0);
 
   // reads
   this->get_parameter("common.lid_topic", params_.lidar_topic);
@@ -279,6 +342,7 @@ void LaserMappingNode::load_params()
   this->get_parameter("pcd_save.pcd_save_en", params_.pcd_save_en);
   this->get_parameter("map_file_path", params_.map_file_path);
   this->get_parameter("runtime_pos_log_enable", params_.runtime_pos_log_enable);
+  this->get_parameter("debug_time_usage", params_.debug_time_usage);
   this->get_parameter("localization.enable_localization", params_.enable_localization);
   this->get_parameter("localization.enable_map_incremental", params_.enable_map_incremental);
   this->get_parameter("localization.leaf_size", params_.leaf_size);
@@ -286,9 +350,33 @@ void LaserMappingNode::load_params()
   this->get_parameter("localization.init_z", params_.init_z);
   this->get_parameter("localization.tf_lookup_timeout", params_.tf_lookup_timeout);
   this->get_parameter("localization.initial_pose_topic", params_.initial_pose_topic);
+  this->get_parameter("localization.relocalization.enable", params_.relocalization_en);
+  this->get_parameter("localization.relocalization.voxel_size", params_.open3d.voxel_size);
+  this->get_parameter("localization.relocalization.map_voxel_size", params_.open3d.map_voxel_size);
+  this->get_parameter("localization.relocalization.scale", params_.open3d.scale);
+  this->get_parameter("localization.relocalization.icp_method", params_.open3d.icp_method);
+  this->get_parameter("localization.relocalization.icp_iteration", params_.open3d.icp_iteration);
+  this->get_parameter("localization.relocalization.use_fpfh", params_.open3d.use_fpfh);
+  this->get_parameter("localization.relocalization.ransac_max_iteration", params_.open3d.ransac_max_iteration);
+  this->get_parameter("localization.relocalization.mutual_filter", params_.open3d.mutual_filter);
+  this->get_parameter("localization.relocalization.statistical_filter", params_.open3d.statistical_filter);
+  this->get_parameter("localization.relocalization.filter_neighbors", params_.open3d.filter_neighbors);
+  this->get_parameter("localization.relocalization.filter_std_ratio", params_.open3d.filter_std_ratio);
+  this->get_parameter("localization.relocalization.crop_radius", params_.open3d.crop_radius);
+  this->get_parameter("localization.relocalization.min_fitness", params_.open3d.min_fitness);
+  this->get_parameter("localization.relocalization.max_translation_delta", params_.open3d.max_translation_delta);
+  this->get_parameter("localization.relocalization.max_rotation_delta", params_.open3d.max_rotation_delta);
+  this->get_parameter("localization.failure_detect_en", params_.failure_detect_en);
+  this->get_parameter("localization.max_pose_to_map_dist", params_.max_pose_to_map_dist);
+  this->get_parameter("localization.max_pose_speed", params_.max_pose_speed);
+  this->get_parameter("localization.relocalization_verify_en", params_.relocalization_verify_en);
+  this->get_parameter("localization.relocalization_verify_window", params_.relocalization_verify_window);
+  this->get_parameter("localization.relocalization_verify_max_drift", params_.relocalization_verify_max_drift);
+  this->get_parameter("localization.relocalization_verify_max_path", params_.relocalization_verify_max_path);
 
   num_max_iterations_ = params_.max_iteration;
   preprocess_->blind = params_.blind;
+  localizer_.setParams(params_.open3d);
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +591,21 @@ void LaserMappingNode::load_map()
   voxel_grid_filter.filter(*map_ds);
   RCLCPP_INFO(this->get_logger(), "GlobalMap ds point num: %zu", map_ds->size());
 
+  // Feed the full-resolution map to the Open3D relocalizer (it pre-downsamples
+  // internally at map_voxel_size), used to refine the initial pose guess.
+  if (params_.relocalization_en)
+  {
+    auto map_xyz = std::make_shared<Open3DLocalizer::Cloud>();
+    map_xyz->reserve(localization_map->size());
+    for (const auto & p : localization_map->points)
+    {
+      map_xyz->push_back(pcl::PointXYZ(p.x, p.y, p.z));
+    }
+    localizer_.setMap(map_xyz);
+    localizer_ready_ = true;
+    RCLCPP_INFO(this->get_logger(), "Open3D relocalizer map ready: %zu points.", localizer_.mapPoints());
+  }
+
   PointVector points_to_add;
   points_to_add.reserve(map_ds->points.size());
   for (size_t i = 0; i < map_ds->points.size(); i++)
@@ -537,15 +640,11 @@ void LaserMappingNode::load_map()
   RCLCPP_INFO(this->get_logger(), "Loaded GlobalMap from %s!", params_.map_path.c_str());
 }
 
-void LaserMappingNode::set_initial_localization(const geometry_msgs::msg::PoseWithCovarianceStamped & input_init)
+void LaserMappingNode::set_initial_localization(const Eigen::Matrix4d & T_map_base)
 {
-  const auto & pos = input_init.pose.pose.position;
-  Eigen::Vector3d p_map(pos.x, pos.y, pos.z);
-
-  const auto & ori = input_init.pose.pose.orientation;
-  Eigen::Quaterniond q_map(ori.w, ori.x, ori.y, ori.z);
-
-  p_map[2] = params_.init_z;
+  const Eigen::Vector3d p_map = T_map_base.block<3, 1>(0, 3);
+  const Eigen::Matrix3d R_map = T_map_base.block<3, 3>(0, 0);
+  Eigen::Quaterniond q_map(R_map);
 
   RCLCPP_INFO(
     this->get_logger(), "Init pose: pos=(%.3f, %.3f, %.3f), quat=(%.4f, %.4f, %.4f, %.4f)",
@@ -555,6 +654,119 @@ void LaserMappingNode::set_initial_localization(const geometry_msgs::msg::PoseWi
   init_state.rot = MTK::SO3(q_map);
   init_state.pos = p_map;
   kf_->change_x(init_state);
+}
+
+bool LaserMappingNode::localization_health_check()
+{
+  // Only active for static-map localization; in mapping mode the map is being
+  // built so the support check does not apply.
+  if (!params_.enable_localization || !params_.failure_detect_en)
+  {
+    return true;
+  }
+
+  // A non-finite pose means the filter diverged -> lost.
+  if (!state_point_.pos.allFinite())
+  {
+    localization_failed_ = true;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Localization FAILED: pose is non-finite; stopping localization, map->base "
+      "TF suppressed until a new initial pose.");
+    return false;
+  }
+
+  // Post-relocalization fly-away guard: the robot is expected to stay put right
+  // after a re-seed (relocalization is done with the robot stationary), so the
+  // pose must stay near the re-seeded position during a short verification
+  // window. Both the straight-line drift from the seed and the total path the
+  // pose travels are bounded: net drift alone misses an oscillating pose (or one
+  // that moves away and comes back), which ends near the seed but has traveled a
+  // long path. If either bound is exceeded, the relocalization itself matched
+  // wrongly and the EKF is diverging -> judge the process failed (same lost-state
+  // machinery: TF suppressed, next /initialpose re-arms the guard).
+  if (relocalized_verify_)
+  {
+    const double since_seed = measures_.lidar_beg_time - relocalized_time_;
+    if (since_seed > params_.relocalization_verify_window)
+    {
+      relocalized_verify_ = false;  // verification window passed -> normal checks
+    }
+    else
+    {
+      // Accumulate the pose path traveled since the re-seed. last_good_pos_ is
+      // the last healthy position, which the re-init branch seeded to the
+      // re-seeded position, so the first step is the move away from the seed.
+      relocalized_path_ += (state_point_.pos - last_good_pos_).norm();
+      const double drift = (state_point_.pos - relocalized_pos_).norm();
+      if (drift > params_.relocalization_verify_max_drift ||
+          relocalized_path_ > params_.relocalization_verify_max_path)
+      {
+        relocalized_verify_ = false;
+        localization_failed_ = true;
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Localization FAILED: relocalization drifted %.2f m from the re-seeded "
+          "position / traveled %.2f m in %.1f s; stopping localization, map->base "
+          "TF suppressed until a new initial pose.",
+          drift, relocalized_path_, since_seed);
+        return false;
+      }
+    }
+  }
+
+  // Map support: Euclidean distance from the pose to the nearest map point.
+  PointType pose_pt;
+  pose_pt.x = static_cast<float>(state_point_.pos(0));
+  pose_pt.y = static_cast<float>(state_point_.pos(1));
+  pose_pt.z = static_cast<float>(state_point_.pos(2));
+  PointVector points_near;
+  std::vector<float> point_sqdis;
+  ikdtree_.Nearest_Search(pose_pt, 1, points_near, point_sqdis);
+  const double nearest_dist = points_near.empty()
+                                ? std::numeric_limits<double>::infinity()
+                                : std::sqrt(static_cast<double>(point_sqdis[0]));
+
+  // Motion: pose displacement rate since the last healthy update. A jump that
+  // is impossible for the robot in the elapsed time means the match is wrong.
+  double speed = 0.0;
+  if (last_good_valid_)
+  {
+    const double dt = measures_.lidar_beg_time - last_good_time_;
+    if (dt > 1e-6)
+    {
+      speed = (state_point_.pos - last_good_pos_).norm() / dt;
+    }
+  }
+
+  const bool ok =
+    nearest_dist <= params_.max_pose_to_map_dist && speed <= params_.max_pose_speed;
+
+  if (ok)
+  {
+    last_good_valid_ = true;
+    last_good_pos_ = state_point_.pos;
+    last_good_time_ = measures_.lidar_beg_time;
+    if (localization_failed_)
+    {
+      localization_failed_ = false;
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Localization recovered: nearest map point %.2f m, speed %.2f m/s.",
+        nearest_dist, speed);
+    }
+  }
+  else
+  {
+    localization_failed_ = true;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Localization FAILED: nearest map point %.2f m (> %.2f) or speed %.2f m/s "
+      "(> %.2f); stopping localization, map->base TF suppressed until a new "
+      "initial pose.",
+      nearest_dist, params_.max_pose_to_map_dist, speed, params_.max_pose_speed);
+  }
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -740,14 +952,113 @@ void LaserMappingNode::timer_callback()
       kf_ = std::make_unique<esekfom::esekf<state_ikfom, 12, input_ikfom>>();
       fill(epsi_, epsi_ + 23, 0.001);
       kf_->init_dyn_share(get_f, df_dx, df_dw, &LaserMappingNode::h_share_model, num_max_iterations_, epsi_);
-      this->set_initial_localization(init_pose_);
+
+      // Initial guess: T_map_base built from the RViz /initialpose click
+      // (a 2D click — z is forced to the configured init_z height).
+      Eigen::Matrix4d T_map_base = initial_pose_to_matrix(init_pose_, params_.init_z);
+
+      // Refine the guess by matching the current scan against the loaded map.
+      // Only a trustworthy match may seed the EKF: the raw RViz click is a 2D
+      // approximation that can land in a local minimum and later fly away, so a
+      // rejected match is treated as a failure (stay stopped, wait for a better
+      // initial pose) instead of a fallback that seeds the raw guess.
+      bool match_ok = false;
+      if (localizer_ready_ && !measures_.lidar->empty())
+      {
+        const auto scan_xyz = to_point_xyz(measures_.lidar);
+        const auto res = localizer_.align(scan_xyz, T_map_base);
+        if (res.success)
+        {
+          RCLCPP_INFO(
+            this->get_logger(),
+            "Relocalization accepted: fitness %.3f, correction %.2f m / %.2f rad "
+            "(%.0f ms, scan %zu pts).",
+            res.fitness, res.translation_delta, res.rotation_delta, res.total_ms,
+            res.scan_points);
+          T_map_base = res.transform;
+          match_ok = true;
+        }
+        else
+        {
+          RCLCPP_WARN(
+            this->get_logger(),
+            "Relocalization rejected (fitness %.3f, correction %.2f m / %.2f rad, "
+            "scan %zu pts); not seeding the EKF.",
+            res.fitness, res.translation_delta, res.rotation_delta, res.scan_points);
+        }
+      }
+      else if (!localizer_ready_)
+      {
+        RCLCPP_WARN(
+          this->get_logger(), "Relocalizer not ready (no map loaded); using the RViz initial pose.");
+      }
+
+      // The map was loaded but the match was rejected: the click does not line up
+      // with the map. Do NOT seed the EKF with the raw guess — keep localization
+      // stopped (TF suppressed) until a new /initialpose re-arms this branch.
+      if (!match_ok && localizer_ready_)
+      {
+        localization_failed_ = true;
+        initial_pose_set_.store(false);
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Relocalization did not produce a trusted pose; localization stays "
+          "stopped until a new %s is received.",
+          params_.initial_pose_topic.c_str());
+        return;
+      }
+
+      set_initial_localization(T_map_base);
+
+      // Resume localization from this seed: clear any previous failure flag and
+      // use the seed as the motion reference, so a teleport via /initialpose is
+      // not mistaken for an implausible scan-to-scan jump by the health check.
+      localization_failed_ = false;
+      last_good_valid_ = true;
+      last_good_pos_ = T_map_base.block<3, 1>(0, 3);
+      last_good_time_ = measures_.lidar_beg_time;
+      // Arm the post-relocalization fly-away guard: the robot is expected to be
+      // stationary right after a re-seed, so the pose must neither leave the
+      // re-seeded position nor travel a long path during the verification window
+      // (checked in localization_health_check()). A divergence means the
+      // relocalization matched wrongly and the EKF is flying away -> the process
+      // failed.
+      relocalized_verify_ = params_.relocalization_verify_en;
+      relocalized_pos_ = last_good_pos_;
+      relocalized_time_ = last_good_time_;
+      relocalized_path_ = 0.0;
+
       first_lidar_time_ = measures_.lidar_beg_time;
       imu_process_->first_lidar_time = first_lidar_time_;
       initial_pose_set_.store(false);
       return;
     }
 
-    double t0, t1, t2, t3, t4, t5, match_start, solve_start, svd_time;
+    // Localization mode does nothing until the operator's first /initialpose:
+    // without a pose the filter has never been seeded (kf_ is null), so there is
+    // no valid pose to publish. Hold here (no EKF, no TF) until one arrives.
+    if (params_.enable_localization && !kf_)
+    {
+      RCLCPP_INFO_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Waiting for initial pose on %s before starting localization.",
+        params_.initial_pose_topic.c_str());
+      return;
+    }
+
+    // Localization was declared lost on an earlier scan (pose drifted off the
+    // map or moved faster than a plausible robot): hold the pose and suppress
+    // the map->base TF until a new /initialpose re-seeds the filter.
+    if (localization_failed_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        this->get_logger(), *this->get_clock(), 5000,
+        "Localization lost (pose off the map or moving too fast); map->base TF "
+        "suppressed. Send a new %s to re-seed.", params_.initial_pose_topic.c_str());
+      return;
+    }
+
+    double t0, t1, t2, t3, t4, t5, t6, t_imu_end, t_fov_end, match_start, solve_start, svd_time;
 
     match_time_ = 0;
     kdtree_search_time_ = 0.0;
@@ -757,6 +1068,7 @@ void LaserMappingNode::timer_callback()
     t0 = omp_get_wtime();
 
     imu_process_->Process(measures_, *kf_, feats_undistort_);
+    t_imu_end = omp_get_wtime();
     state_point_ = kf_->get_x();
     pos_lid_ = state_point_.pos + state_point_.rot * state_point_.offset_T_L_I;
 
@@ -773,6 +1085,7 @@ void LaserMappingNode::timer_callback()
     {
       lasermap_fov_segment();
     }
+    t_fov_end = omp_get_wtime();
 
     /*** downsample the feature points in a scan ***/
     downSizeFilterSurf_.setInputCloud(feats_undistort_);
@@ -836,6 +1149,15 @@ void LaserMappingNode::timer_callback()
 
     double t_update_end = omp_get_wtime();
 
+    // Detect localization failure on the updated pose: if it drifted away from
+    // the map support or moved faster than a plausible robot, set the failure
+    // flag and suppress the TF/odometry for this scan (the hold at the top of
+    // this callback keeps it suppressed until a new /initialpose).
+    if (!localization_health_check())
+    {
+      return;
+    }
+
     /******* Publish odometry *******/
     publish_odometry();
 
@@ -852,6 +1174,21 @@ void LaserMappingNode::timer_callback()
     if (params_.scan_publish_en) publish_frame_world();
     if (params_.scan_publish_en && params_.scan_bodyframe_pub_en) publish_frame_body();
     if (params_.effect_map_en) publish_effect_world();
+
+    /*** Debug: per-step time usage for this scan ***/
+    if (params_.debug_time_usage)
+    {
+      t6 = omp_get_wtime();
+      RCLCPP_INFO(
+        this->get_logger(),
+        "[debug-timing] lidar_t=%.3f n_pts=%d | imu+undistort:%.2f fov_segment:%.2f "
+        "downsample:%.2f prep:%.2f | ikdtree+eskf:%.2f | check+odom:%.2f "
+        "map_incr:%.2f | publish:%.2f | total:%.2f ms",
+        measures_.lidar_beg_time, feats_down_size_,
+        (t_imu_end - t0) * 1e3, (t_fov_end - t_imu_end) * 1e3, (t1 - t_fov_end) * 1e3,
+        (t2 - t1) * 1e3, (t_update_end - t_update_start) * 1e3, (t3 - t_update_end) * 1e3,
+        (t5 - t3) * 1e3, (t6 - t5) * 1e3, (t6 - t0) * 1e3);
+    }
 
     /*** Debug variables ***/
     if (params_.runtime_pos_log_enable)

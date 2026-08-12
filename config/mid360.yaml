@@ -1,10 +1,11 @@
 /**:
     ros__parameters:
         max_iteration: 3
-        filter_size_surf: 0.5
-        filter_size_map: 0.5
+        filter_size_surf: 0.05
+        filter_size_map: 0.3
         cube_side_length: 1000.0
         runtime_pos_log_enable: false
+        debug_time_usage: false            # print the per-scan time usage of each step in the main loop
         map_file_path: "./test.pcd"
 
         frame:
@@ -49,7 +50,51 @@
             enable_localization: true
             enable_map_incremental: false
             leaf_size: 0.05
-            map_path: "/mnt/hdd/localization_misc/maps/2nd_floor/pc/localization_cloud.pcd"
+            map_path: "/home/markov/localization/maps/2nd_floor/pc/localization_cloud.pcd"
             init_z: 1.2                  # z-height [m] applied to the RViz initial pose (base_link height in the map)
             tf_lookup_timeout: 5.0       # seconds to wait for the lidar->base static TF at startup
             initial_pose_topic: "/initialpose"  # RViz "2D Pose Estimate" topic that provides the initial pose
+
+            # Localization failure detection: the pose must stay close to the
+            # loaded map and move at a plausible speed. If it drifts off the map
+            # or jumps too fast, localization is declared lost and the map->base
+            # TF is suppressed until a new /initialpose re-seeds the filter.
+            failure_detect_en: true
+            max_pose_to_map_dist: 3.0    # [m] pose farther than this from the nearest map point => lost
+            max_pose_speed: 3.0          # [m/s] scan-to-scan pose displacement rate above this => lost
+
+            # Post-relocalization fly-away guard: relocalization is done with the
+            # robot stationary, so right after a /initialpose re-seed the pose
+            # must neither drift away from nor travel a long path during a short
+            # verification window. If it does, the relocalization is judged failed
+            # and the TF is suppressed until a new initial pose. The path bound
+            # catches a pose that oscillates or moves away and comes back (net
+            # drift stays small, but the total distance traveled is large). (The
+            # window is short and relocalization_verify_en can be turned off if
+            # the robot starts moving immediately after a re-seed.)
+            relocalization_verify_en: true          # check the pose stays put after a re-seed
+            relocalization_verify_window: 2.0       # [s] verification window after the re-seed
+            relocalization_verify_max_drift: 0.1    # [m] max allowed straight-line drift from the re-seeded position
+            relocalization_verify_max_path: 0.2     # [m] max total path the pose may travel during the window
+
+            # Open3D relocalization: on /initialpose the current scan is matched
+            # against the loaded map (FPFH+RANSAC coarse, multiscale-ICP fine) and
+            # the EKF is seeded with the refined pose instead of the raw click.
+            relocalization:
+                enable: true
+                voxel_size: 0.1            # downsample voxel for the SCAN in FPFH + ICP (m)
+                map_voxel_size: 0.2        # downsample voxel for the LOADED MAP target (m)
+                scale: [1.0, 2.0, 4.0]     # multiscale ICP ladder as multiples of voxel_size (coarse first)
+                icp_method: 1              # 0 = point-to-point, 1 = point-to-plane, 2 = GICP
+                icp_iteration: 120         # iterations per ICP level
+                use_fpfh: false            # coarse FPFH+RANSAC before ICP. Skip when the guess is close (<~1 m, <~10 deg)
+                ransac_max_iteration: 100000
+                mutual_filter: true        # FPFH correspondence mutual filtering
+                statistical_filter: true   # remove sparse outliers before registration
+                filter_neighbors: 50
+                filter_std_ratio: 3.0
+                crop_radius: 50.0          # crop the map target to ±crop_radius m around the guess (0 = off)
+                # Validity thresholds: a match is accepted only if ALL pass.
+                min_fitness: 0.8           # min overlap ratio of the accepted match (0..1)
+                max_translation_delta: 5.0 # max correction from the initial guess [m]
+                max_rotation_delta: 2.0    # max correction from the initial guess [rad]

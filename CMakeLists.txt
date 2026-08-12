@@ -74,9 +74,11 @@ set(dependencies
 # Thirdparty libraries
 find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io)
+find_package(Open3D REQUIRED)
 
 message(Eigen: ${EIGEN3_INCLUDE_DIR})
 message(STATUS "PCL: ${PCL_INCLUDE_DIRS}")
+message(STATUS "Open3D: ${Open3D_INCLUDE_DIRS}")
 
 set(msg_files
   "msg/Pose6D.msg"
@@ -92,14 +94,16 @@ add_executable(fastlio_mapping
   src/laser_mapping.cpp
   src/preprocess.cpp
   src/IMU_Processing.cpp
+  src/open3d_localizer.cpp
   include/ikd-Tree/ikd_Tree.cpp
 )
 target_include_directories(fastlio_mapping PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
+  ${Open3D_INCLUDE_DIRS}
 )
-target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} Eigen3::Eigen)
+target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} Eigen3::Eigen ${Open3D_LIBRARIES})
 
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")

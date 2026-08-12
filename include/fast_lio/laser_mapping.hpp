@@ -44,6 +44,7 @@
 #include <ikd-Tree/ikd_Tree.h>
 #include <fast_lio/IMU_Processing.hpp>
 #include <fast_lio/preprocess.hpp>
+#include <fast_lio/open3d_localizer.hpp>
 
 namespace fast_lio
 {
@@ -100,6 +101,7 @@ private:
     std::string map_file_path = "./test.pcd";
     // logging
     bool runtime_pos_log_enable = false;
+    bool debug_time_usage = false;  // per-scan timing breakdown printed each iteration
     // localization
     bool enable_localization = false;
     bool enable_map_incremental = true;
@@ -108,6 +110,29 @@ private:
     double init_z = 1.2;             // base_link height in the map for an initial pose
     double tf_lookup_timeout = 5.0;  // [s] to wait for the lidar->base static TF
     std::string initial_pose_topic = "/initialpose";
+    // Open3D relocalization: refine the /initialpose guess by matching the
+    // current scan against the loaded map before seeding the EKF.
+    bool relocalization_en = true;
+    Open3DParams open3d;  // FPFH+RANSAC + multiscale-ICP tuning (localization.relocalization.*)
+    // Localization failure detection: the pose must stay close to the loaded map
+    // (map support) and move at a physically plausible speed, otherwise the
+    // localization is declared lost and the map->base TF is suppressed until a
+    // new /initialpose re-seeds the filter.
+    bool failure_detect_en = true;
+    double max_pose_to_map_dist = 3.0;  // [m] pose farther than this from the nearest map point
+    double max_pose_speed = 3.0;        // [m/s] scan-to-scan pose displacement rate above this
+    // Post-relocalization fly-away guard: right after a /initialpose re-seeds the
+    // EKF the robot is expected to be stationary, so the pose must stay near the
+    // re-seeded position for a short verification window. If it leaves, the
+    // relocalization itself is judged failed and localization is declared lost.
+    // Both the straight-line drift from the re-seeded position and the TOTAL path
+    // the pose travels during the window are bounded: net drift misses an
+    // oscillating pose (or one that moves away and comes back), which still ends
+    // near the seed while having traveled a long path.
+    bool relocalization_verify_en = true;           // enable the post-relocalization fly-away check
+    double relocalization_verify_window = 2.0;      // [s] verification window after the re-seed
+    double relocalization_verify_max_drift = 1.0;   // [m] max allowed straight-line drift from the re-seeded position
+    double relocalization_verify_max_path = 2.0;    // [m] max total path the pose may travel during the window
   };
 
   void load_params();
@@ -199,7 +224,8 @@ private:
   void lasermap_fov_segment();
   void map_incremental();
   void load_map();
-  void set_initial_localization(const geometry_msgs::msg::PoseWithCovarianceStamped & input_init);
+  // Seed the EKF with an initial pose expressed as T_map_base (homogeneous 4x4).
+  void set_initial_localization(const Eigen::Matrix4d & T_map_base);
 
   // ---------------------------------------------------------------------------
   // Preprocessing / IMU
@@ -238,8 +264,32 @@ private:
   // ---------------------------------------------------------------------------
   // Localization state
   // ---------------------------------------------------------------------------
-  std::atomic<bool> initial_pose_set_{true};
+  // True when a fresh /initialpose is waiting to be consumed by the re-init
+  // branch in timer_callback(). In localization mode it starts false so the node
+  // does nothing until the operator's first /initialpose; the constructor sets
+  // it true for mapping mode (self-start from the origin on the first scan).
+  std::atomic<bool> initial_pose_set_{false};
   geometry_msgs::msg::PoseWithCovarianceStamped init_pose_;
+  // Open3D registration core; refines the /initialpose guess against the map.
+  Open3DLocalizer localizer_;
+  bool localizer_ready_ = false;  // set once the loaded map has been fed to localizer_
+  // Localization failure detection state: while localization_failed_ is true the
+  // map->base TF is suppressed and the filter holds its pose until a new
+  // /initialpose re-seeds it (see localization_health_check()).
+  bool localization_failed_ = false;
+  Eigen::Vector3d last_good_pos_ = Eigen::Vector3d::Zero();  // last healthy pose position [map]
+  double last_good_time_ = 0.0;   // measures_.lidar_beg_time of the last healthy update
+  bool last_good_valid_ = false;  // false until the first healthy update
+  // Post-relocalization verification state: while relocalized_verify_ is true the
+  // pose must stay within relocalization_verify_max_drift of relocalized_pos_ and
+  // travel less than relocalization_verify_max_path in total (accumulated
+  // scan-to-scan displacement in relocalized_path_) until relocalized_time_ +
+  // relocalization_verify_window (see localization_health_check()). Re-armed by
+  // the re-init branch every time a /initialpose is consumed.
+  bool relocalized_verify_ = false;
+  Eigen::Vector3d relocalized_pos_ = Eigen::Vector3d::Zero();
+  double relocalized_time_ = 0.0;
+  double relocalized_path_ = 0.0;  // total pose path traveled since the re-seed
 
   // ---------------------------------------------------------------------------
   // Callbacks
@@ -264,6 +314,12 @@ private:
   void publish_map();
   void save_to_pcd();
   void dump_lio_state_to_log(FILE * fp);
+
+  // Checks the current EKF pose for map support (distance to the nearest map
+  // point) and physically plausible scan-to-scan motion; on failure it sets
+  // localization_failed_ and returns false, on success it refreshes the
+  // last-good pose reference used by the motion check.
+  bool localization_health_check();
 
   // ---------------------------------------------------------------------------
   // Debug logging
