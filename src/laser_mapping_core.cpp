@@ -782,7 +782,7 @@ void LaserMappingCore::dump_lio_state_to_log(FILE * fp, double lidar_beg_time)
 
 PointCloudXYZI::Ptr LaserMappingCore::map_to_publish()
 {
-  PointCloudXYZI::Ptr laserCloudFullRes(params_.dense_publish_en ? feats_undistort_ : feats_down_body_);
+  PointCloudXYZI::Ptr laserCloudFullRes(feats_down_body_);
   int size = laserCloudFullRes->points.size();
   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
 

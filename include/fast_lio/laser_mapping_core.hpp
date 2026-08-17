@@ -82,7 +82,6 @@ public:
     bool effect_map_en = false;
     bool map_en = false;
     bool scan_publish_en = true;
-    bool dense_publish_en = true;
     bool scan_bodyframe_pub_en = true;
     // pcd save (only used when map incremental is enabled)
     bool pcd_save_en = false;

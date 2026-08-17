@@ -202,7 +202,6 @@ void LaserMappingNode::load_params()
   this->declare_parameter<bool>("publish.effect_map_en", false);
   this->declare_parameter<bool>("publish.map_en", false);
   this->declare_parameter<bool>("publish.scan_publish_en", true);
-  this->declare_parameter<bool>("publish.dense_publish_en", true);
   this->declare_parameter<bool>("publish.scan_bodyframe_pub_en", true);
   // pcd save
   this->declare_parameter<bool>("pcd_save.pcd_save_en", false);
@@ -272,7 +271,6 @@ void LaserMappingNode::load_params()
   this->get_parameter("publish.effect_map_en", params_.effect_map_en);
   this->get_parameter("publish.map_en", params_.map_en);
   this->get_parameter("publish.scan_publish_en", params_.scan_publish_en);
-  this->get_parameter("publish.dense_publish_en", params_.dense_publish_en);
   this->get_parameter("publish.scan_bodyframe_pub_en", params_.scan_bodyframe_pub_en);
   this->get_parameter("pcd_save.pcd_save_en", params_.pcd_save_en);
   this->get_parameter("map_file_path", params_.map_file_path);
@@ -692,8 +690,7 @@ void LaserMappingNode::publish_frame_world()
 {
   if (params_.scan_publish_en)
   {
-    PointCloudXYZI::Ptr laserCloudFullRes(
-      params_.dense_publish_en ? core_->feats_undistort() : core_->feats_down_body());
+    PointCloudXYZI::Ptr laserCloudFullRes(core_->feats_down_body());
     int size = laserCloudFullRes->points.size();
     PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(size, 1));
 
