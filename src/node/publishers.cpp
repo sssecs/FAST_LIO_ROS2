@@ -114,12 +114,13 @@ void LocalizationNode::publish_map()
   // The /Laser_map cloud comes straight from the immutable prior map (coarse
   // display resolution). The old implementation accumulated the current scan
   // into a publish cloud and depended on leftover scan-buffer state.
-  if (!map_)
+  const auto map = std::atomic_load(&map_);
+  if (!map)
   {
     return;
   }
   sensor_msgs::msg::PointCloud2 laserCloudmsg;
-  pcl::toROSMsg(map_->publishCloud(), laserCloudmsg);
+  pcl::toROSMsg(map->publishCloud(), laserCloudmsg);
   laserCloudmsg.header.stamp = this->get_clock()->now();
   laserCloudmsg.header.frame_id = params_.map_frame;
   pub_laser_cloud_map_->publish(laserCloudmsg);

@@ -74,10 +74,11 @@ void LocalizationNode::fill_sensor_diagnostics(diagnostic_updater::DiagnosticSta
 void LocalizationNode::fill_state_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
   const auto loc_state = state_.load();
+  const auto map = std::atomic_load(&map_);
   stat.add("lifecycle_state", get_current_state().label());
   stat.add("localization_state", toString(loc_state));
-  stat.add("map_path", map_ ? map_->info().path : std::string("(none)"));
-  stat.add("map_points", map_ ? static_cast<int>(map_->info().map_points) : 0);
+  stat.add("map_path", map ? map->info().path : std::string("(none)"));
+  stat.add("map_points", map ? static_cast<int>(map->info().map_points) : 0);
 
   if (loc_state == LocalizationState::kLost)
   {
@@ -127,10 +128,11 @@ void LocalizationNode::fill_tracking_diagnostics(diagnostic_updater::DiagnosticS
 void LocalizationNode::fill_relocation_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat)
 {
   const auto t = telemetry_.snapshot();
+  const auto map = std::atomic_load(&map_);
 
-  stat.add("map_path", map_ ? map_->info().path : std::string("(none)"));
-  stat.add("map_raw_points", map_ ? static_cast<int>(map_->info().raw_points) : 0);
-  stat.add("map_matching_points", map_ ? static_cast<int>(map_->info().map_points) : 0);
+  stat.add("map_path", map ? map->info().path : std::string("(none)"));
+  stat.add("map_raw_points", map ? static_cast<int>(map->info().raw_points) : 0);
+  stat.add("map_matching_points", map ? static_cast<int>(map->info().map_points) : 0);
 
   if (!t.reloc_attempted)
   {

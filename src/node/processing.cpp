@@ -45,6 +45,10 @@ namespace fast_lio
 
 void LocalizationNode::timer_callback()
 {
+  // Serializes all core_/localizer_ access against map switches and lifecycle
+  // transitions (see the concurrency note in localization_node.hpp).
+  std::lock_guard<std::mutex> pipeline_lock(pipeline_mtx_);
+
   if (!sync_packages(measures_))
   {
     return;
@@ -59,7 +63,12 @@ void LocalizationNode::timer_callback()
 
     // Initial guess: T_map_base built from the RViz /initialpose click
     // (a 2D click — z is forced to the configured init_z height).
-    Eigen::Matrix4d T_map_base = initial_pose_to_matrix(init_pose_, params_.init_z);
+    geometry_msgs::msg::PoseWithCovarianceStamped init_pose;
+    {
+      std::lock_guard<std::mutex> lock(init_pose_mtx_);
+      init_pose = init_pose_;
+    }
+    Eigen::Matrix4d T_map_base = initial_pose_to_matrix(init_pose, init_z_);
 
     // Refine the guess by matching the current scan against the loaded map.
     // Only a trustworthy match may seed the EKF: the raw RViz click is a 2D
@@ -67,10 +76,10 @@ void LocalizationNode::timer_callback()
     // rejected match is treated as a failure (stay stopped, wait for a better
     // initial pose) instead of a fallback that seeds the raw guess.
     bool match_ok = false;
-    if (localizer_ready_ && !measures_.lidar->empty())
+    if (localizer_ready_ && localizer_ && !measures_.lidar->empty())
     {
       const auto scan_xyz = to_point_xyz(measures_.lidar);
-      const auto res = localizer_.align(scan_xyz, T_map_base);
+      const auto res = localizer_->align(scan_xyz, T_map_base);
       {
         std::lock_guard<std::mutex> lock(telemetry_.mtx);
         telemetry_.d.reloc_attempted = true;

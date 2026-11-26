@@ -138,7 +138,9 @@ void LocalizationNode::initial_pose_callback(const geometry_msgs::msg::PoseWithC
     RCLCPP_WARN(get_logger(), "Initial pose ignored: no map loaded.");
     return;
   }
+  init_pose_mtx_.lock();
   init_pose_ = *msg;
+  init_pose_mtx_.unlock();
   initial_pose_set_.store(true);
   RCLCPP_INFO(get_logger(), "Initial pose received and queued for relocalization.");
 }
@@ -149,6 +151,11 @@ void LocalizationNode::initial_pose_callback(const geometry_msgs::msg::PoseWithC
 
 bool LocalizationNode::sync_packages(MeasureGroup & meas)
 {
+  // The sensor callbacks run in their own callback group on the multithreaded
+  // executor, so the buffers must be locked here (the single-threaded era
+  // relied on the executor for mutual exclusion).
+  std::lock_guard<std::mutex> lock(mtx_buffer_);
+
   if (lidar_buffer_.empty() || imu_buffer_.empty())
   {
     return false;

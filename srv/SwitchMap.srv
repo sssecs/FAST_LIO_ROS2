@@ -1,0 +1,14 @@
+# Switch the active prior map at runtime (hot switch while ACTIVE, or cold
+# switch while INACTIVE). The new map is built outside the processing lock;
+# on failure the old map stays fully usable.
+
+string map_path              # PCD file of the new prior map
+bool override_init_z         # true: use init_z below for subsequent initial poses
+float64 init_z               # [m] base_link height in the new map
+bool has_initial_pose        # true: queue this pose for immediate relocalization
+geometry_msgs/Pose initial_pose  # initial pose in the NEW map frame (z is overridden by init_z)
+---
+bool success
+string message
+uint32 map_points            # matching-resolution point count of the new map
+float64 load_time_sec        # wall time spent building the new map

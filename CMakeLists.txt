@@ -84,8 +84,14 @@ set(msg_files
   "msg/Pose6D.msg"
 )
 
+set(srv_files
+  "srv/SwitchMap.srv"
+)
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   ${msg_files}
+  ${srv_files}
+  DEPENDENCIES geometry_msgs
 )
 ament_export_dependencies(rosidl_default_runtime)
 
@@ -100,6 +106,7 @@ add_executable(fastlio_localization
   src/node/processing.cpp
   src/node/publishers.cpp
   src/node/sensor_callbacks.cpp
+  src/node/switch_map.cpp
   src/preprocess/preprocess.cpp
   src/relocalization/open3d_localizer.cpp
 )

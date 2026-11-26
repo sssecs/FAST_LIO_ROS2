@@ -54,6 +54,7 @@
 #include <fast_lio/node/telemetry.hpp>
 #include <fast_lio/preprocess/preprocess.hpp>
 #include <fast_lio/relocalization/open3d_localizer.hpp>
+#include <fast_lio/srv/switch_map.hpp>
 
 namespace fast_lio
 {
@@ -89,7 +90,10 @@ private:
 
   Params params_;
   std::unique_ptr<LocalizationCore> core_;
-  PriorMapPtr map_;  // active prior map (also held by the core)
+  // Active prior map. Always accessed through std::atomic_load/atomic_store so
+  // the diagnostics task and the map switch can touch it without the pipeline
+  // lock. Also held (immutably) by the core.
+  PriorMapPtr map_;
 
   MeasureGroup measures_;
 
@@ -125,6 +129,25 @@ private:
   geometry_msgs::msg::PoseStamped msg_body_pose_;
 
   // ---------------------------------------------------------------------------
+  // Concurrency. The node runs on a MultiThreadedExecutor with three callback
+  // groups: sensor subscriptions (sub_group_), the 100 Hz main loop
+  // (main_group_) and the heavy map-switch service (heavy_group_); the default
+  // group carries lifecycle, diagnostics and /initialpose. pipeline_mtx_
+  // serializes every touch of core_/localizer_ (whole timer body vs. the short
+  // map-swap section), so a long Open3D alignment only delays a pending map
+  // swap, never corrupts state. Buffers stay under mtx_buffer_.
+  // ---------------------------------------------------------------------------
+  rclcpp::CallbackGroup::SharedPtr sub_group_;
+  rclcpp::CallbackGroup::SharedPtr main_group_;
+  rclcpp::CallbackGroup::SharedPtr heavy_group_;
+  std::mutex pipeline_mtx_;
+  rclcpp::Service<fast_lio::srv::SwitchMap>::SharedPtr switch_map_srv_;
+  std::atomic<bool> switching_{false};
+  void switch_map_cbk(
+    const std::shared_ptr<fast_lio::srv::SwitchMap::Request> req,
+    std::shared_ptr<fast_lio::srv::SwitchMap::Response> res);
+
+  // ---------------------------------------------------------------------------
   // ROS handles. Publishers are created in on_configure and only publish while
   // ACTIVE; subscriptions and timers exist only while ACTIVE.
   // ---------------------------------------------------------------------------
@@ -149,11 +172,16 @@ private:
   // ---------------------------------------------------------------------------
   std::atomic<LocalizationState> state_{LocalizationState::kNoMap};
   // True when a fresh /initialpose is waiting to be consumed by the re-init
-  // branch in timer_callback().
+  // branch in timer_callback(). init_pose_ itself is guarded by init_pose_mtx_.
   std::atomic<bool> initial_pose_set_{false};
+  std::mutex init_pose_mtx_;
   geometry_msgs::msg::PoseWithCovarianceStamped init_pose_;
+  // Effective base_link height for /initialpose seeds (params_.init_z unless
+  // overridden by a map switch). Read/written under pipeline_mtx_.
+  double init_z_ = 1.2;
   // Open3D registration core; refines the /initialpose guess against the map.
-  Open3DLocalizer localizer_;
+  // Held by pointer so a map switch can build the new one outside pipeline_mtx_.
+  std::unique_ptr<Open3DLocalizer> localizer_;
   bool localizer_ready_ = false;  // set once the loaded map has been fed to localizer_
 
   // ---------------------------------------------------------------------------

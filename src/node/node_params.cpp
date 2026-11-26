@@ -134,7 +134,6 @@ void LocalizationNode::load_params()
   this->get_parameter("localization.relocalization_verify_max_path", params_.relocalization_verify_max_path);
 
   preprocess_->blind = params_.blind;
-  localizer_.setParams(params_.open3d);
 }
 
 }  // namespace fast_lio

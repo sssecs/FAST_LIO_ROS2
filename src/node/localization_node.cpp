@@ -68,8 +68,10 @@ CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
     return CallbackReturn::FAILURE;
   }
 
-  // --- algorithm core and prior map -------------------------------------------
+  // --- algorithm core, relocalizer and prior map ------------------------------
   core_ = std::make_unique<LocalizationCore>(params_, get_logger());
+  localizer_ = std::make_unique<Open3DLocalizer>(params_.open3d);
+  init_z_ = params_.init_z;
   if (!params_.map_path.empty())
   {
     try
@@ -87,6 +89,18 @@ CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
   {
     RCLCPP_WARN(get_logger(), "No map_path configured; the node will stay in NO_MAP.");
   }
+
+  // --- callback groups ---------------------------------------------------------
+  sub_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  main_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  heavy_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  // --- map switch service (available from INACTIVE on) -------------------------
+  switch_map_srv_ = create_service<fast_lio::srv::SwitchMap>(
+    "~/switch_map",
+    std::bind(
+      &LocalizationNode::switch_map_cbk, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, heavy_group_);
 
   // --- publishers (inactive until on_activate) --------------------------------
   pub_laser_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
@@ -119,34 +133,45 @@ CallbackReturn LocalizationNode::on_activate(const rclcpp_lifecycle::State & sta
   pub_odom_->on_activate();
   pub_path_->on_activate();
 
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.callback_group = sub_group_;
   sub_pcl_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     params_.lidar_topic, rclcpp::SensorDataQoS(),
-    [this](const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg) { this->standard_pcl_cbk(msg); });
+    [this](const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg) { this->standard_pcl_cbk(msg); },
+    sub_options);
   sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
     params_.imu_topic, 10,
-    [this](const sensor_msgs::msg::Imu::ConstSharedPtr & msg) { this->imu_cbk(msg); });
+    [this](const sensor_msgs::msg::Imu::ConstSharedPtr & msg) { this->imu_cbk(msg); },
+    sub_options);
+  // /initialpose only stores the message and sets a flag; the heavy work
+  // (relocalization) happens in the main loop. Default callback group.
   sub_init_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
     params_.initial_pose_topic, 10,
     [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) { this->initial_pose_callback(msg); });
 
-  auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
-  timer_ = rclcpp::create_timer(
-    this, get_clock(), period_ms, std::bind(&LocalizationNode::timer_callback, this));
-
   // Fresh start: drop any pose from a previous active period; the operator
   // must provide a new /initialpose.
   clear_buffers();
-  core_->reset_filter();
+  {
+    std::lock_guard<std::mutex> lock(pipeline_mtx_);
+    core_->reset_filter();
+  }
   initial_pose_set_.store(false);
   path_.poses.clear();
-  set_state(map_ ? LocalizationState::kUnlocalized : LocalizationState::kNoMap);
+  set_state(std::atomic_load(&map_) ? LocalizationState::kUnlocalized : LocalizationState::kNoMap);
 
   // Publish the loaded map once so RViz can display it before the first pose.
   // transient_local caches the sample, so late subscribers still receive it.
-  if (map_ && params_.map_en)
+  if (std::atomic_load(&map_) && params_.map_en)
   {
     publish_map();
   }
+
+  // Create the main loop LAST so it cannot fire while activation is still
+  // resetting state.
+  auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
+  timer_ = rclcpp::create_timer(
+    this, get_clock(), period_ms, std::bind(&LocalizationNode::timer_callback, this), main_group_);
 
   RCLCPP_INFO(get_logger(), "on_activate done. State: %s.", toString(state_.load()));
   return CallbackReturn::SUCCESS;
@@ -163,6 +188,10 @@ CallbackReturn LocalizationNode::on_deactivate(const rclcpp_lifecycle::State &)
   sub_imu_.reset();
   sub_init_pose_.reset();
   clear_buffers();
+  // Wait out any in-flight main-loop iteration before reporting inactive.
+  {
+    std::lock_guard<std::mutex> lock(pipeline_mtx_);
+  }
 
   pub_laser_cloud_full_->on_deactivate();
   pub_laser_cloud_full_body_->on_deactivate();
@@ -185,6 +214,7 @@ CallbackReturn LocalizationNode::on_cleanup(const rclcpp_lifecycle::State &)
   sub_pcl_.reset();
   sub_imu_.reset();
   sub_init_pose_.reset();
+  switch_map_srv_.reset();
   clear_buffers();
 
   pub_laser_cloud_full_.reset();
@@ -198,10 +228,17 @@ CallbackReturn LocalizationNode::on_cleanup(const rclcpp_lifecycle::State &)
   tf_listener_.reset();
   tf_buffer_.reset();
 
-  localizer_.setMap(nullptr);
-  localizer_ready_ = false;
-  map_.reset();
-  core_.reset();  // also clears the esekfom trampoline pointer
+  {
+    // Serializes with any in-flight main-loop iteration or map switch.
+    std::lock_guard<std::mutex> lock(pipeline_mtx_);
+    localizer_.reset();
+    localizer_ready_ = false;
+    std::atomic_store(&map_, PriorMapPtr{});
+    core_.reset();  // also clears the esekfom trampoline pointer
+  }
+  sub_group_.reset();
+  main_group_.reset();
+  heavy_group_.reset();
   updater_.reset();
   telemetry_.reset();
   initial_pose_set_.store(false);
@@ -245,12 +282,12 @@ void LocalizationNode::load_map()
 
   if (params_.relocalization_en)
   {
-    localizer_.setMap(map->cloudXyz());
+    localizer_->setMap(map->cloudXyz());
     localizer_ready_ = true;
-    RCLCPP_INFO(get_logger(), "Open3D relocalizer map ready: %zu points.", localizer_.mapPoints());
+    RCLCPP_INFO(get_logger(), "Open3D relocalizer map ready: %zu points.", localizer_->mapPoints());
   }
 
-  map_ = std::move(map);
+  std::atomic_store(&map_, PriorMapPtr(std::move(map)));
 }
 
 void LocalizationNode::set_state(LocalizationState state)
