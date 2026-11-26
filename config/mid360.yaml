@@ -42,7 +42,7 @@
                                          # NOTE: the old 0.05 silently overflowed pcl::VoxelGrid and never took
                                          # effect; the de facto matching resolution was filter_size_map = 0.3.
             map_publish_leaf: 0.2        # [m] voxel of the /Laser_map display cloud
-            map_path: "/mnt/hdd/localization_misc/maps/2nd_floor/pc/localization_cloud.pcd"
+            map_path: "/mnt/hdd/localization_misc/maps/2nd_floor/pc/localization_cloud.pcd"  # NOTE: overridden by the launch 'map_path' argument (empty there = start in NO_MAP and pick a map via switch_map)
             init_z: 1.2                  # z-height [m] applied to the RViz initial pose (base_link height in the map)
             tf_lookup_timeout: 5.0       # seconds to wait for the lidar->base static TF at startup
             initial_pose_topic: "/initialpose"  # RViz "2D Pose Estimate" topic that provides the initial pose

@@ -27,6 +27,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     config_path = LaunchConfiguration('config_path')
     config_file = LaunchConfiguration('config_file')
+    map_path = LaunchConfiguration('map_path')
     rviz_use = LaunchConfiguration('rviz')
     rviz_cfg = LaunchConfiguration('rviz_cfg')
 
@@ -41,6 +42,12 @@ def generate_launch_description():
     declare_config_file_cmd = DeclareLaunchArgument(
         'config_file', default_value='mid360.yaml',
         description='Config file'
+    )
+    declare_map_path_cmd = DeclareLaunchArgument(
+        'map_path', default_value='',
+        description='Prior map PCD to load at configure time (overrides the yaml value). '
+                    'Empty: start without a map (NO_MAP) and select one later via the '
+                    'switch_map service'
     )
     declare_rviz_cmd = DeclareLaunchArgument(
         'rviz', default_value='true',
@@ -57,7 +64,8 @@ def generate_launch_description():
         name=NODE_NAME,
         namespace=NODE_NS,
         parameters=[PathJoinSubstitution([config_path, config_file]),
-                    {'use_sim_time': use_sim_time}],
+                    {'use_sim_time': use_sim_time,
+                     'localization.map_path': map_path}],
         output='screen'
     )
     rviz_node = Node(
@@ -105,6 +113,7 @@ def generate_launch_description():
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_config_path_cmd)
     ld.add_action(declare_config_file_cmd)
+    ld.add_action(declare_map_path_cmd)
     ld.add_action(declare_rviz_cmd)
     ld.add_action(declare_rviz_config_path_cmd)
     ld.add_action(lidar_to_base)
