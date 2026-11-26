@@ -202,12 +202,4 @@ void LocalizationNode::timer_callback()
   }
 }
 
-void LocalizationNode::map_publish_callback()
-{
-  if (params_.map_en && map_)
-  {
-    publish_map();
-  }
-}
-
 }  // namespace fast_lio

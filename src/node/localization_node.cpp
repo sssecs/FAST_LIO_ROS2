@@ -87,7 +87,8 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   // Publish the loaded map once so RViz can display it before the first pose.
-  if (map_)
+  // transient_local caches the sample, so late subscribers still receive it.
+  if (map_ && params_.map_en)
   {
     publish_map();
   }
@@ -95,10 +96,6 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
   auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
   timer_ = rclcpp::create_timer(
     this, this->get_clock(), period_ms, std::bind(&LocalizationNode::timer_callback, this));
-
-  auto map_period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0));
-  map_pub_timer_ = rclcpp::create_timer(
-    this, this->get_clock(), map_period_ms, std::bind(&LocalizationNode::map_publish_callback, this));
 
   RCLCPP_INFO(
     this->get_logger(), "Node init finished. State: %s.", toString(state_.load()));

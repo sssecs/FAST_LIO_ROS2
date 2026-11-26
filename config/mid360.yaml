@@ -33,7 +33,7 @@
         publish:
             path_en: true                # true: publish Path
             effect_map_en: true         # true: publish Effects
-            map_en: false                # true: re-publish the prior map on /Laser_map at 1 Hz
+            map_en: false                # true: publish the prior map once on /Laser_map at load (latched); false: never publish
             scan_publish_en:  false      # false: close all the point cloud output
             scan_bodyframe_pub_en: false # true: output the point cloud scans in IMU-body-frame
 

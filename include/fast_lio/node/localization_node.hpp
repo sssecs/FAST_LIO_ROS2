@@ -108,7 +108,6 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_init_pose_;
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::TimerBase::SharedPtr map_pub_timer_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -131,7 +130,6 @@ private:
   // Callbacks (node/localization_node.cpp, node/processing.cpp)
   // ---------------------------------------------------------------------------
   void timer_callback();
-  void map_publish_callback();
   void initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
   void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg);
   void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr & msg_in);
