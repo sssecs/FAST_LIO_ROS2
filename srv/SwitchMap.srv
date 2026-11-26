@@ -5,8 +5,14 @@
 string map_path              # PCD file of the new prior map
 bool override_init_z         # true: use init_z below for subsequent initial poses
 float64 init_z               # [m] base_link height in the new map
-bool has_initial_pose        # true: queue this pose for immediate relocalization
+bool has_initial_pose        # true: seed the new map with the pose below
 geometry_msgs/Pose initial_pose  # initial pose in the NEW map frame (z is overridden by init_z)
+# Only meaningful with has_initial_pose. true: the pose is TRUSTED — the filter
+# is seeded with it directly, skipping the 3D scan-matching relocalization.
+# Use for seamless map transitions where the cross-map pose correspondence is
+# already known (computed by an external module). false: the pose is treated
+# like an RViz click and refined/validated by Open3D registration first.
+bool seamless
 ---
 bool success
 string message

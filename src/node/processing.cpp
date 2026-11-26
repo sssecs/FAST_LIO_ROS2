@@ -58,9 +58,6 @@ void LocalizationNode::timer_callback()
   // filter with the pose received on /initialpose.
   if (initial_pose_set_.load())
   {
-    set_state(LocalizationState::kRelocalizing);
-    core_->init_filter();
-
     // Initial guess: T_map_base built from the RViz /initialpose click
     // (a 2D click — z is forced to the configured init_z height).
     geometry_msgs::msg::PoseWithCovarianceStamped init_pose;
@@ -69,14 +66,46 @@ void LocalizationNode::timer_callback()
       init_pose = init_pose_;
     }
     Eigen::Matrix4d T_map_base = initial_pose_to_matrix(init_pose, init_z_);
+    const bool seamless = seamless_seed_.exchange(false);
+
+    // Seamless map switch with a live filter: the cross-map pose is trusted,
+    // so only the pose is replaced — the converged IMU state (velocity,
+    // biases, gravity) and the sensor stream continue uninterrupted, allowing
+    // the robot to keep MOVING across a map boundary. The stationary fly-away
+    // guard is skipped for the same reason.
+    if (seamless && core_->is_initialized())
+    {
+      core_->reseed_pose(T_map_base);
+      core_->rearm_reinit(T_map_base.block<3, 1>(0, 3), measures_.lidar_beg_time, false);
+      initial_pose_set_.store(false);
+      set_state(LocalizationState::kTracking);
+      RCLCPP_INFO(
+        get_logger(),
+        "Seamless map switch: pose reseeded directly (IMU state kept, no scan matching).");
+      return;
+    }
+
+    set_state(LocalizationState::kRelocalizing);
+    core_->init_filter();
 
     // Refine the guess by matching the current scan against the loaded map.
     // Only a trustworthy match may seed the EKF: the raw RViz click is a 2D
     // approximation that can land in a local minimum and later fly away, so a
     // rejected match is treated as a failure (stay stopped, wait for a better
     // initial pose) instead of a fallback that seeds the raw guess.
+    //
+    // Exception: a seamless seed (filter not yet initialized, e.g. right after
+    // the first activation) is still trusted and skips the scan matching.
     bool match_ok = false;
-    if (localizer_ready_ && localizer_ && !measures_.lidar->empty())
+    if (seamless)
+    {
+      RCLCPP_INFO(
+        get_logger(),
+        "Seamless seed before filter init: trusting the provided pose, skipping "
+        "scan-matching relocalization.");
+      match_ok = true;
+    }
+    else if (localizer_ready_ && localizer_ && !measures_.lidar->empty())
     {
       const auto scan_xyz = to_point_xyz(measures_.lidar);
       const auto res = localizer_->align(scan_xyz, T_map_base);
@@ -133,7 +162,7 @@ void LocalizationNode::timer_callback()
     }
 
     core_->set_initial_localization(T_map_base);
-    core_->rearm_reinit(T_map_base.block<3, 1>(0, 3), measures_.lidar_beg_time);
+    core_->rearm_reinit(T_map_base.block<3, 1>(0, 3), measures_.lidar_beg_time, !seamless);
     core_->set_first_lidar_time(measures_.lidar_beg_time);
 
     initial_pose_set_.store(false);

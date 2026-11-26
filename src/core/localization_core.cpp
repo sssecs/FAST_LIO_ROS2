@@ -100,7 +100,28 @@ void LocalizationCore::set_initial_localization(const Eigen::Matrix4d & T_map_ba
   kf_->change_x(init_state);
 }
 
-void LocalizationCore::rearm_reinit(const Eigen::Vector3d & seed_pos, double lidar_beg_time)
+void LocalizationCore::reseed_pose(const Eigen::Matrix4d & T_map_base)
+{
+  const Eigen::Vector3d p_map = T_map_base.block<3, 1>(0, 3);
+  const Eigen::Quaterniond q_map(Eigen::Matrix3d(T_map_base.block<3, 3>(0, 0)));
+
+  RCLCPP_INFO(
+    logger_, "Reseed pose: pos=(%.3f, %.3f, %.3f), quat=(%.4f, %.4f, %.4f, %.4f)",
+    p_map.x(), p_map.y(), p_map.z(), q_map.x(), q_map.y(), q_map.z(), q_map.w());
+
+  auto state = kf_->get_x();
+  state.rot = MTK::SO3(q_map);
+  state.pos = p_map;
+  kf_->change_x(state);
+  state_point_ = kf_->get_x();
+  pos_lid_ = state_point_.pos + state_point_.rot * state_point_.offset_T_L_I;
+  geoQuat_.x = state_point_.rot.coeffs()[0];
+  geoQuat_.y = state_point_.rot.coeffs()[1];
+  geoQuat_.z = state_point_.rot.coeffs()[2];
+  geoQuat_.w = state_point_.rot.coeffs()[3];
+}
+
+void LocalizationCore::rearm_reinit(const Eigen::Vector3d & seed_pos, double lidar_beg_time, bool arm_verify)
 {
   // Resume localization from this seed: clear any previous failure flag and
   // use the seed as the motion reference, so a teleport via /initialpose is
@@ -112,8 +133,9 @@ void LocalizationCore::rearm_reinit(const Eigen::Vector3d & seed_pos, double lid
   // Arm the post-relocalization fly-away guard: the robot is expected to be
   // stationary right after a re-seed, so the pose must neither leave the
   // re-seeded position nor travel a long path during the verification window
-  // (checked in localization_health_check()).
-  relocalized_verify_ = params_.relocalization_verify_en;
+  // (checked in localization_health_check()). Skipped for seamless map
+  // switches, where the robot may legitimately be moving.
+  relocalized_verify_ = arm_verify && params_.relocalization_verify_en;
   relocalized_pos_ = last_good_pos_;
   relocalized_time_ = last_good_time_;
   relocalized_path_ = 0.0;

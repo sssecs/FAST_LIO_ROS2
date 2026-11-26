@@ -66,8 +66,15 @@ public:
   bool process_scan(const MeasureGroup & meas, ScanTiming & timing);
   // Seed the filter with a refined T_map_base.
   void set_initial_localization(const Eigen::Matrix4d & T_map_base);
+  // Pose-only reseed for seamless map switches: replaces position/rotation but
+  // keeps the converged IMU state (velocity, biases, gravity) and covariance,
+  // so a MOVING robot can continue across a map boundary. Requires an
+  // initialized filter (is_initialized()).
+  void reseed_pose(const Eigen::Matrix4d & T_map_base);
   // Re-arm the post-relocalization verification state after a re-seed.
-  void rearm_reinit(const Eigen::Vector3d & seed_pos, double lidar_beg_time);
+  // arm_verify=false skips the stationary fly-away guard (seamless switches,
+  // where the robot may legitimately be moving).
+  void rearm_reinit(const Eigen::Vector3d & seed_pos, double lidar_beg_time, bool arm_verify = true);
   void set_first_lidar_time(double t);
   // Map-support + motion sanity check on the current pose. On failure it sets
   // localization_failed_ and the returned report says why.

@@ -141,6 +141,7 @@ void LocalizationNode::initial_pose_callback(const geometry_msgs::msg::PoseWithC
   init_pose_mtx_.lock();
   init_pose_ = *msg;
   init_pose_mtx_.unlock();
+  seamless_seed_.store(false);  // an operator click always goes through scan matching
   initial_pose_set_.store(true);
   RCLCPP_INFO(get_logger(), "Initial pose received and queued for relocalization.");
 }

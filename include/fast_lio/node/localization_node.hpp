@@ -174,6 +174,9 @@ private:
   // True when a fresh /initialpose is waiting to be consumed by the re-init
   // branch in timer_callback(). init_pose_ itself is guarded by init_pose_mtx_.
   std::atomic<bool> initial_pose_set_{false};
+  // True when the queued initial pose comes from a seamless map switch and
+  // must seed the EKF directly, skipping the scan-matching relocalization.
+  std::atomic<bool> seamless_seed_{false};
   std::mutex init_pose_mtx_;
   geometry_msgs::msg::PoseWithCovarianceStamped init_pose_;
   // Effective base_link height for /initialpose seeds (params_.init_z unless

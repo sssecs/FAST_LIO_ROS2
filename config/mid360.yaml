@@ -45,7 +45,7 @@
             map_path: "/mnt/hdd/localization_misc/maps/2nd_floor/pc/localization_cloud.pcd"
             init_z: 1.2                  # z-height [m] applied to the RViz initial pose (base_link height in the map)
             tf_lookup_timeout: 5.0       # seconds to wait for the lidar->base static TF at startup
-            initial_pose_topic: "initialpose"  # RViz "2D Pose Estimate" topic (relative: resolves under the node namespace)
+            initial_pose_topic: "/initialpose"  # RViz "2D Pose Estimate" topic that provides the initial pose
 
             # Localization failure detection: the pose must stay close to the
             # loaded map and move at a plausible speed. If it drifts off the map
