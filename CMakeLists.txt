@@ -41,6 +41,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   ${OpenMP_C_FLAGS}")
 # ROS dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -55,6 +56,7 @@ find_package(tf2_sensor_msgs REQUIRED)
 
 set(dependencies
   rclcpp
+  rclcpp_lifecycle
   geometry_msgs
   nav_msgs
   sensor_msgs
@@ -94,6 +96,7 @@ add_executable(fastlio_localization
   src/node/node_params.cpp
   src/node/processing.cpp
   src/node/publishers.cpp
+  src/node/sensor_callbacks.cpp
   src/preprocess/preprocess.cpp
   src/relocalization/open3d_localizer.cpp
 )

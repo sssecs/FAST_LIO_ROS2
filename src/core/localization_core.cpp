@@ -71,6 +71,19 @@ void LocalizationCore::init_filter()
   kf_->init_dyn_share(get_f, df_dx, df_dw, &LocalizationCore::h_share_model, num_max_iterations_, epsi_);
 }
 
+void LocalizationCore::reset_filter()
+{
+  kf_.reset();
+  imu_process_->Reset();
+  localization_failed_ = false;
+  last_good_valid_ = false;
+  relocalized_verify_ = false;
+  feats_undistort_->clear();
+  feats_down_body_->clear();
+  feats_down_size_ = 0;
+  effct_feat_num_ = 0;
+}
+
 void LocalizationCore::set_initial_localization(const Eigen::Matrix4d & T_map_base)
 {
   const Eigen::Vector3d p_map = T_map_base.block<3, 1>(0, 3);

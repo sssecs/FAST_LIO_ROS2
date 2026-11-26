@@ -1,41 +1,54 @@
-// Localization node: construction, parameters wiring, sensor callbacks and
-// buffer synchronization. Per-scan processing lives in node/processing.cpp and
-// publishing helpers in node/publishers.cpp.
+// Localization node: lifecycle transitions and map loading.
+//
+// Lifecycle contract (see localization_node.hpp):
+//   constructor    declare parameters only — no IO, no TF, no ROS graph.
+//   on_configure   read params, static TF, load the prior map, create pubs.
+//   on_activate    create subscriptions + main loop, reset the filter.
+//   on_deactivate  stop the main loop and subscriptions, KEEP map + static TF.
+//   on_cleanup     release everything (map, core, ROS handles).
+//
+// Sensor callbacks live in node/sensor_callbacks.cpp, per-scan orchestration
+// in node/processing.cpp and publishing helpers in node/publishers.cpp.
 
 #include <fast_lio/node/localization_node.hpp>
 
 #include <functional>
-#include <stdexcept>
-
-#include <omp.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
 namespace fast_lio
 {
 
+using CallbackReturn = LocalizationNode::CallbackReturn;
+
 // ---------------------------------------------------------------------------
-// Construction
+// Construction (UNCONFIGURED): parameters only
 // ---------------------------------------------------------------------------
 
 LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
-  : Node("fastlio_localization", options)
+  : rclcpp_lifecycle::LifecycleNode("fastlio_localization", options)
 {
   preprocess_ = std::make_shared<Preprocess>();
+  declare_params();
+}
 
+// ---------------------------------------------------------------------------
+// on_configure: params, static TF, prior map, publishers
+// ---------------------------------------------------------------------------
+
+CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
+{
   load_params();
 
   RCLCPP_INFO(
-    this->get_logger(), "lidar topic: %s, imu topic: %s, frames: %s <- %s -> %s",
+    get_logger(), "lidar topic: %s, imu topic: %s, frames: %s <- %s -> %s",
     params_.lidar_topic.c_str(), params_.imu_topic.c_str(), params_.map_frame.c_str(),
     params_.base_frame.c_str(), params_.lidar_frame.c_str());
 
-  path_.header.stamp = this->get_clock()->now();
+  path_.header.stamp = get_clock()->now();
   path_.header.frame_id = params_.map_frame;
 
   // --- static lidar -> base TF -----------------------------------------------
   // Required to express the lidar scan and the IMU in the robot base frame.
-  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
   try
   {
@@ -43,48 +56,88 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
       params_.base_frame, params_.lidar_frame, tf2::TimePointZero,
       std::chrono::seconds(static_cast<int64_t>(params_.tf_lookup_timeout)));
     RCLCPP_INFO(
-      this->get_logger(), "Static TF %s -> %s available.", params_.lidar_frame.c_str(),
+      get_logger(), "Static TF %s -> %s available.", params_.lidar_frame.c_str(),
       params_.base_frame.c_str());
   }
   catch (const tf2::TransformException & ex)
   {
-    throw std::runtime_error(
-            std::string("lidar -> base static TF not available at startup: ") + ex.what());
+    RCLCPP_ERROR(
+      get_logger(), "Could not get static TF %s -> %s: %s", params_.lidar_frame.c_str(),
+      params_.base_frame.c_str(), ex.what());
+    on_cleanup(rclcpp_lifecycle::State());
+    return CallbackReturn::FAILURE;
   }
 
   // --- algorithm core and prior map -------------------------------------------
-  core_ = std::make_unique<LocalizationCore>(params_, this->get_logger());
+  core_ = std::make_unique<LocalizationCore>(params_, get_logger());
   if (!params_.map_path.empty())
   {
-    load_map();
+    try
+    {
+      load_map();
+    }
+    catch (const std::exception & ex)
+    {
+      RCLCPP_ERROR(get_logger(), "Failed to load prior map: %s", ex.what());
+      on_cleanup(rclcpp_lifecycle::State());
+      return CallbackReturn::FAILURE;
+    }
   }
   else
   {
-    RCLCPP_WARN(
-      this->get_logger(), "No map_path configured; waiting for a map before localizing.");
+    RCLCPP_WARN(get_logger(), "No map_path configured; the node will stay in NO_MAP.");
   }
 
-  // --- ROS graph -------------------------------------------------------------
-  sub_pcl_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+  // --- publishers (inactive until on_activate) --------------------------------
+  pub_laser_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
+  pub_laser_cloud_full_body_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
+  pub_laser_cloud_effect_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
+  // transient_local so RViz (which subscribes after the map was published once)
+  // still receives the loaded map.
+  pub_laser_cloud_map_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+    "/Laser_map", rclcpp::QoS(1).transient_local());
+  pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+  pub_path_ = create_publisher<nav_msgs::msg::Path>("/path", 20);
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
+  RCLCPP_INFO(get_logger(), "on_configure done.");
+  return CallbackReturn::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// on_activate: subscriptions, main loop, filter reset
+// ---------------------------------------------------------------------------
+
+CallbackReturn LocalizationNode::on_activate(const rclcpp_lifecycle::State & state)
+{
+  pub_laser_cloud_full_->on_activate();
+  pub_laser_cloud_full_body_->on_activate();
+  pub_laser_cloud_effect_->on_activate();
+  pub_laser_cloud_map_->on_activate();
+  pub_odom_->on_activate();
+  pub_path_->on_activate();
+
+  sub_pcl_ = create_subscription<sensor_msgs::msg::PointCloud2>(
     params_.lidar_topic, rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg) { this->standard_pcl_cbk(msg); });
-  sub_imu_ = this->create_subscription<sensor_msgs::msg::Imu>(
+  sub_imu_ = create_subscription<sensor_msgs::msg::Imu>(
     params_.imu_topic, 10,
     [this](const sensor_msgs::msg::Imu::ConstSharedPtr & msg) { this->imu_cbk(msg); });
-  sub_init_pose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+  sub_init_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
     params_.initial_pose_topic, 10,
     [this](const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) { this->initial_pose_callback(msg); });
 
-  pub_laser_cloud_full_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
-  pub_laser_cloud_full_body_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
-  pub_laser_cloud_effect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
-  // transient_local so RViz (which subscribes after the map was published once
-  // at startup) still receives the loaded map.
-  pub_laser_cloud_map_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "/Laser_map", rclcpp::QoS(1).transient_local());
-  pub_odom_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
-  pub_path_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
-  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+  auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
+  timer_ = rclcpp::create_timer(
+    this, get_clock(), period_ms, std::bind(&LocalizationNode::timer_callback, this));
+
+  // Fresh start: drop any pose from a previous active period; the operator
+  // must provide a new /initialpose.
+  clear_buffers();
+  core_->reset_filter();
+  initial_pose_set_.store(false);
+  path_.poses.clear();
+  set_state(map_ ? LocalizationState::kUnlocalized : LocalizationState::kNoMap);
 
   // Publish the loaded map once so RViz can display it before the first pose.
   // transient_local caches the sample, so late subscribers still receive it.
@@ -93,26 +146,95 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
     publish_map();
   }
 
-  auto period_ms = std::chrono::milliseconds(static_cast<int64_t>(1000.0 / 100.0));
-  timer_ = rclcpp::create_timer(
-    this, this->get_clock(), period_ms, std::bind(&LocalizationNode::timer_callback, this));
-
-  RCLCPP_INFO(
-    this->get_logger(), "Node init finished. State: %s.", toString(state_.load()));
+  RCLCPP_INFO(get_logger(), "on_activate done. State: %s.", toString(state_.load()));
+  return CallbackReturn::SUCCESS;
 }
 
 // ---------------------------------------------------------------------------
-// Map loading
+// on_deactivate: stop the main loop, keep the map and static TF
+// ---------------------------------------------------------------------------
+
+CallbackReturn LocalizationNode::on_deactivate(const rclcpp_lifecycle::State &)
+{
+  timer_.reset();
+  sub_pcl_.reset();
+  sub_imu_.reset();
+  sub_init_pose_.reset();
+  clear_buffers();
+
+  pub_laser_cloud_full_->on_deactivate();
+  pub_laser_cloud_full_body_->on_deactivate();
+  pub_laser_cloud_effect_->on_deactivate();
+  pub_laser_cloud_map_->on_deactivate();
+  pub_odom_->on_deactivate();
+  pub_path_->on_deactivate();
+
+  RCLCPP_INFO(get_logger(), "on_deactivate done (map and static TF kept).");
+  return CallbackReturn::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// on_cleanup / on_shutdown / on_error: release everything
+// ---------------------------------------------------------------------------
+
+CallbackReturn LocalizationNode::on_cleanup(const rclcpp_lifecycle::State &)
+{
+  timer_.reset();
+  sub_pcl_.reset();
+  sub_imu_.reset();
+  sub_init_pose_.reset();
+  clear_buffers();
+
+  pub_laser_cloud_full_.reset();
+  pub_laser_cloud_full_body_.reset();
+  pub_laser_cloud_effect_.reset();
+  pub_laser_cloud_map_.reset();
+  pub_odom_.reset();
+  pub_path_.reset();
+
+  tf_broadcaster_.reset();
+  tf_listener_.reset();
+  tf_buffer_.reset();
+
+  localizer_.setMap(nullptr);
+  localizer_ready_ = false;
+  map_.reset();
+  core_.reset();  // also clears the esekfom trampoline pointer
+  initial_pose_set_.store(false);
+  set_state(LocalizationState::kNoMap);
+
+  RCLCPP_INFO(get_logger(), "on_cleanup done.");
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn LocalizationNode::on_shutdown(const rclcpp_lifecycle::State &)
+{
+  timer_.reset();
+  sub_pcl_.reset();
+  sub_imu_.reset();
+  sub_init_pose_.reset();
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn LocalizationNode::on_error(const rclcpp_lifecycle::State &)
+{
+  RCLCPP_ERROR(get_logger(), "on_error: releasing resources.");
+  on_cleanup(rclcpp_lifecycle::State());
+  return CallbackReturn::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// Map loading (called from on_configure)
 // ---------------------------------------------------------------------------
 
 void LocalizationNode::load_map()
 {
   RCLCPP_INFO(
-    this->get_logger(), "Loading prior map from %s (leaf %.3f m)...", params_.map_path.c_str(),
+    get_logger(), "Loading prior map from %s (leaf %.3f m)...", params_.map_path.c_str(),
     params_.leaf_size);
   auto map = std::make_shared<PriorMap>(params_.map_path, params_.leaf_size, params_.map_publish_leaf);
   RCLCPP_INFO(
-    this->get_logger(), "Prior map ready: %zu raw -> %zu matching / %zu display points.",
+    get_logger(), "Prior map ready: %zu raw -> %zu matching / %zu display points.",
     map->info().raw_points, map->info().map_points, map->info().publish_points);
 
   core_->set_map(map);
@@ -121,12 +243,10 @@ void LocalizationNode::load_map()
   {
     localizer_.setMap(map->cloudXyz());
     localizer_ready_ = true;
-    RCLCPP_INFO(
-      this->get_logger(), "Open3D relocalizer map ready: %zu points.", localizer_.mapPoints());
+    RCLCPP_INFO(get_logger(), "Open3D relocalizer map ready: %zu points.", localizer_.mapPoints());
   }
 
   map_ = std::move(map);
-  set_state(LocalizationState::kUnlocalized);
 }
 
 void LocalizationNode::set_state(LocalizationState state)
@@ -134,169 +254,22 @@ void LocalizationNode::set_state(LocalizationState state)
   const auto prev = state_.exchange(state);
   if (prev != state)
   {
-    RCLCPP_INFO(this->get_logger(), "State: %s -> %s", toString(prev), toString(state));
+    RCLCPP_INFO(get_logger(), "State: %s -> %s", toString(prev), toString(state));
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sensor callbacks
-// ---------------------------------------------------------------------------
-
-void LocalizationNode::standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg)
+void LocalizationNode::clear_buffers()
 {
   std::lock_guard<std::mutex> lock(mtx_buffer_);
-
-  // Transform the scan from the lidar frame to the base frame. A failure here
-  // must not kill the node: drop the frame and report it instead.
-  sensor_msgs::msg::PointCloud2 cloud_transformed;
-  try
-  {
-    tf2::doTransform(*msg, cloud_transformed, tf_lidar_to_base_);
-  }
-  catch (const tf2::TransformException & ex)
-  {
-    RCLCPP_ERROR(this->get_logger(), "LiDAR transform failed, dropping frame: %s", ex.what());
-    return;
-  }
-
-  double cur_time = get_time_sec(msg->header.stamp);
-
-  if (!is_first_lidar_ && cur_time < last_timestamp_lidar_)
-  {
-    RCLCPP_WARN(this->get_logger(), "lidar loop back, clear buffer");
-    lidar_buffer_.clear();
-  }
-  is_first_lidar_ = false;
-
-  PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
-  preprocess_->process(cloud_transformed, ptr);
-
-  lidar_buffer_.push_back(ptr);
-  time_buffer_.push_back(cur_time);
-  last_timestamp_lidar_ = cur_time;
-}
-
-void LocalizationNode::imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr & msg_in)
-{
-  // Rotate the IMU measurement from the lidar frame to the base frame using the
-  // cached static transform.
-  sensor_msgs::msg::Imu imu_transformed = *msg_in;
-
-  tf2::Quaternion q_tf;
-  tf2::fromMsg(tf_lidar_to_base_.transform.rotation, q_tf);
-
-  tf2::Quaternion q_imu;
-  tf2::fromMsg(msg_in->orientation, q_imu);
-  imu_transformed.orientation = tf2::toMsg(q_tf * q_imu);
-
-  tf2::Vector3 gyro(
-    msg_in->angular_velocity.x, msg_in->angular_velocity.y, msg_in->angular_velocity.z);
-  gyro = tf2::quatRotate(q_tf, gyro);
-  imu_transformed.angular_velocity.x = gyro.x();
-  imu_transformed.angular_velocity.y = gyro.y();
-  imu_transformed.angular_velocity.z = gyro.z();
-
-  tf2::Vector3 accel(
-    msg_in->linear_acceleration.x, msg_in->linear_acceleration.y, msg_in->linear_acceleration.z);
-  accel = tf2::quatRotate(q_tf, accel);
-  imu_transformed.linear_acceleration.x = accel.x();
-  imu_transformed.linear_acceleration.y = accel.y();
-  imu_transformed.linear_acceleration.z = accel.z();
-
-  auto msg = std::make_shared<sensor_msgs::msg::Imu>(imu_transformed);
-  msg->header.stamp =
-    get_ros_time(get_time_sec(msg_in->header.stamp) - params_.time_offset_lidar_to_imu);
-
-  if (std::abs(timediff_lidar_wrt_imu_) > 0.1 && params_.time_sync_en)
-  {
-    msg->header.stamp = rclcpp::Time(timediff_lidar_wrt_imu_ + get_time_sec(msg_in->header.stamp));
-  }
-
-  double timestamp = get_time_sec(msg->header.stamp);
-
-  {
-    std::lock_guard<std::mutex> lock(mtx_buffer_);
-    if (timestamp < last_timestamp_imu_)
-    {
-      RCLCPP_WARN(this->get_logger(), "IMU loop back, clear buffer");
-      imu_buffer_.clear();
-    }
-    last_timestamp_imu_ = timestamp;
-    imu_buffer_.push_back(msg);
-  }
-}
-
-void LocalizationNode::initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
-{
-  if (state_.load() == LocalizationState::kNoMap)
-  {
-    RCLCPP_WARN(
-      this->get_logger(), "Initial pose ignored: no map loaded (%s).", params_.initial_pose_topic.c_str());
-    return;
-  }
-  init_pose_ = *msg;
-  initial_pose_set_.store(true);
-  RCLCPP_INFO(this->get_logger(), "Initial pose received and queued for relocalization.");
-}
-
-// ---------------------------------------------------------------------------
-// Sensor synchronization
-// ---------------------------------------------------------------------------
-
-bool LocalizationNode::sync_packages(MeasureGroup & meas)
-{
-  if (lidar_buffer_.empty() || imu_buffer_.empty())
-  {
-    return false;
-  }
-
-  /*** push a lidar scan ***/
-  if (!lidar_pushed_)
-  {
-    meas.lidar = lidar_buffer_.front();
-    meas.lidar_beg_time = time_buffer_.front();
-    if (meas.lidar->points.size() <= 1)  // time too little
-    {
-      lidar_end_time_ = meas.lidar_beg_time + lidar_mean_scantime_;
-      RCLCPP_WARN(this->get_logger(), "Too few input points in scan.");
-    }
-    else if (meas.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime_)
-    {
-      lidar_end_time_ = meas.lidar_beg_time + lidar_mean_scantime_;
-    }
-    else
-    {
-      scan_num_++;
-      lidar_end_time_ = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000);
-      lidar_mean_scantime_ +=
-        (meas.lidar->points.back().curvature / double(1000) - lidar_mean_scantime_) / scan_num_;
-    }
-
-    meas.lidar_end_time = lidar_end_time_;
-
-    lidar_pushed_ = true;
-  }
-
-  if (last_timestamp_imu_ < lidar_end_time_)
-  {
-    return false;
-  }
-
-  /*** push imu data, and pop from imu buffer ***/
-  double imu_time = get_time_sec(imu_buffer_.front()->header.stamp);
-  meas.imu.clear();
-  while ((!imu_buffer_.empty()) && (imu_time < lidar_end_time_))
-  {
-    imu_time = get_time_sec(imu_buffer_.front()->header.stamp);
-    if (imu_time > lidar_end_time_) break;
-    meas.imu.push_back(imu_buffer_.front());
-    imu_buffer_.pop_front();
-  }
-
-  lidar_buffer_.pop_front();
-  time_buffer_.pop_front();
+  lidar_buffer_.clear();
+  time_buffer_.clear();
+  imu_buffer_.clear();
   lidar_pushed_ = false;
-  return true;
+  is_first_lidar_ = true;
+  last_timestamp_lidar_ = 0.0;
+  last_timestamp_imu_ = -1.0;
+  lidar_mean_scantime_ = 0.0;
+  scan_num_ = 0;
 }
 
 }  // namespace fast_lio

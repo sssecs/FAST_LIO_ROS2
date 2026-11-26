@@ -1,14 +1,17 @@
-// Parameter declaration and loading for the localization node. Every key used
-// from the yaml must be declared here: the node is created with default
-// NodeOptions, so yaml overrides are not auto-declared and a bare
-// get_parameter would silently keep the struct defaults.
+// Parameter declaration and loading for the localization node.
+//
+// declare_params() runs in the constructor (UNCONFIGURED): every key used from
+// the yaml must be declared — the node is created with default NodeOptions, so
+// yaml overrides are not auto-declared and a bare get_parameter would silently
+// keep the struct defaults. load_params() runs in on_configure and reads the
+// (possibly overridden) values into params_.
 
 #include <fast_lio/node/localization_node.hpp>
 
 namespace fast_lio
 {
 
-void LocalizationNode::load_params()
+void LocalizationNode::declare_params()
 {
   // topics
   this->declare_parameter<std::string>("common.lid_topic", "/livox/lidar");
@@ -72,7 +75,10 @@ void LocalizationNode::load_params()
   this->declare_parameter<double>("localization.relocalization_verify_window", 2.0);
   this->declare_parameter<double>("localization.relocalization_verify_max_drift", 1.0);
   this->declare_parameter<double>("localization.relocalization_verify_max_path", 2.0);
+}
 
+void LocalizationNode::load_params()
+{
   // reads
   this->get_parameter("common.lid_topic", params_.lidar_topic);
   this->get_parameter("common.imu_topic", params_.imu_topic);

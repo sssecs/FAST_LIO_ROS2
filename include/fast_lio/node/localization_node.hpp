@@ -1,4 +1,4 @@
-// Mid-360 static-map localization node.
+// Mid-360 static-map localization node (ROS 2 Lifecycle).
 //
 // The node owns only the ROS plumbing: parameters, TF, subscribers/publishers,
 // sensor callbacks, buffer synchronization, per-scan orchestration, the
@@ -6,9 +6,18 @@
 // lives in LocalizationCore, the map asset in PriorMap and the Open3D
 // relocalization in Open3DLocalizer.
 //
+// Two orthogonal state machines:
+//   - the ROS lifecycle (outer) manages infrastructure: the constructor only
+//     declares parameters; on_configure() does IO (static TF, prior map) and
+//     creates publishers; on_activate() creates subscriptions and the main
+//     loop; on_deactivate() stops them but KEEPS the map and static TF;
+//     on_cleanup() releases everything.
+//   - LocalizationState (inner) describes the runtime localization semantics
+//     and only advances while the node is ACTIVE.
+//
 // Localization flow:
-//   1. load a downsampled PCD map into a PriorMap,
-//   2. wait for an initial pose on /initialpose (RViz "2D Pose Estimate"),
+//   1. configure: load a downsampled PCD map into a PriorMap,
+//   2. activate: wait for an initial pose on /initialpose,
 //   3. refine it against the map with the Open3D relocalizer,
 //   4. run the standard FAST-LIO update against the (static) map.
 
@@ -21,6 +30,8 @@
 #include <string>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -45,17 +56,32 @@
 namespace fast_lio
 {
 
-class LocalizationNode : public rclcpp::Node
+class LocalizationNode : public rclcpp_lifecycle::LifecycleNode
 {
 public:
+  using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
   explicit LocalizationNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
 
   LocalizationState state() const { return state_.load(); }
 
+  // ---------------------------------------------------------------------------
+  // Lifecycle transitions
+  // ---------------------------------------------------------------------------
+  CallbackReturn on_configure(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_activate(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state) override;
+  CallbackReturn on_error(const rclcpp_lifecycle::State & state) override;
+
 private:
+  // Constructor: declare all parameters (no IO, no ROS graph entities).
+  void declare_params();
+  // on_configure: read the declared parameters into params_.
   void load_params();
-  // Build the PriorMap from params_.map_path, inject it into the core and the
-  // relocalizer and publish it once on /Laser_map. Throws on failure.
+  // on_configure: build the PriorMap from params_.map_path and inject it into
+  // the core and the relocalizer. Throws on failure.
   void load_map();
   void set_state(LocalizationState state);
 
@@ -82,6 +108,7 @@ private:
   double lidar_end_time_ = 0.0;
 
   bool sync_packages(MeasureGroup & meas);
+  void clear_buffers();
 
   // ---------------------------------------------------------------------------
   // Preprocessing
@@ -96,14 +123,15 @@ private:
   geometry_msgs::msg::PoseStamped msg_body_pose_;
 
   // ---------------------------------------------------------------------------
-  // ROS handles
+  // ROS handles. Publishers are created in on_configure and only publish while
+  // ACTIVE; subscriptions and timers exist only while ACTIVE.
   // ---------------------------------------------------------------------------
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_full_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_full_body_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_effect_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_map_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
-  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_full_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_full_body_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_effect_;
+  rclcpp_lifecycle::LifecyclePublisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_laser_cloud_map_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr pub_path_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_init_pose_;

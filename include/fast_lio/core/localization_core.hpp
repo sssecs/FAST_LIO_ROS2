@@ -57,6 +57,9 @@ public:
   // (Re-)initialize the IMU process and the iterated-EKF for a fresh
   // /initialpose seed.
   void init_filter();
+  // Drop the filter and all localization state (back to "waiting for an
+  // initial pose"); the map stays injected. Used on lifecycle activate.
+  void reset_filter();
   // Run one scan through the EKF pipeline (IMU integration, downsampling,
   // iterated update). Returns false when the scan produced no publishable
   // update (no map, empty features, too few points).

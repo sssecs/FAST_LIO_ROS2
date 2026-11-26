@@ -3,11 +3,17 @@ import os.path
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, LogInfo, RegisterEventHandler
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState, matches_node_name
+
+from lifecycle_msgs.msg import Transition
+
+NODE_NAME = 'fastlio_localization'
 
 
 def generate_launch_description():
@@ -43,9 +49,11 @@ def generate_launch_description():
         description='RViz config file path'
     )
 
-    fast_lio_node = Node(
+    fast_lio_node = LifecycleNode(
         package='fast_lio',
         executable='fastlio_localization',
+        name=NODE_NAME,
+        namespace='',
         parameters=[PathJoinSubstitution([config_path, config_file]),
                     {'use_sim_time': use_sim_time}],
         output='screen'
@@ -69,6 +77,28 @@ def generate_launch_description():
         ]
     )
 
+    # Bring the lifecycle node up automatically: configure as soon as the node
+    # is up, activate as soon as it reports inactive (configured).
+    configure_event = EmitEvent(
+        event=ChangeState(
+            lifecycle_node_matcher=matches_node_name(node_name=NODE_NAME),
+            transition_id=Transition.TRANSITION_CONFIGURE,
+        )
+    )
+    activate_event = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=fast_lio_node,
+            goal_state='inactive',
+            entities=[
+                LogInfo(msg='[lifecycle] {} configured, activating...'.format(NODE_NAME)),
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=matches_node_name(node_name=NODE_NAME),
+                    transition_id=Transition.TRANSITION_ACTIVATE,
+                )),
+            ],
+        )
+    )
+
     ld = LaunchDescription()
     ld.add_action(declare_use_sim_time_cmd)
     ld.add_action(declare_config_path_cmd)
@@ -77,6 +107,8 @@ def generate_launch_description():
     ld.add_action(declare_rviz_config_path_cmd)
     ld.add_action(lidar_to_base)
     ld.add_action(fast_lio_node)
+    ld.add_action(configure_event)
+    ld.add_action(activate_event)
     # ld.add_action(rviz_node)
 
     return ld
