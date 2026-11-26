@@ -34,6 +34,8 @@ void LocalizationNode::standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::Con
   {
     RCLCPP_WARN(get_logger(), "lidar loop back, clear buffer");
     lidar_buffer_.clear();
+    std::lock_guard<std::mutex> tlock(telemetry_.mtx);
+    telemetry_.d.lidar_regressions++;
   }
   is_first_lidar_ = false;
 
@@ -43,6 +45,23 @@ void LocalizationNode::standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::Con
   lidar_buffer_.push_back(ptr);
   time_buffer_.push_back(cur_time);
   last_timestamp_lidar_ = cur_time;
+
+  // Diagnostics: frame counters, rate EMA and queue depth.
+  const double now = steady_now_sec();
+  std::lock_guard<std::mutex> tlock(telemetry_.mtx);
+  if (telemetry_.d.last_lidar_wall > 0.0)
+  {
+    const double dt = now - telemetry_.d.last_lidar_wall;
+    if (dt > 1e-6)
+    {
+      const double inst = 1.0 / dt;
+      telemetry_.d.lidar_hz =
+        telemetry_.d.lidar_hz <= 0.0 ? inst : 0.9 * telemetry_.d.lidar_hz + 0.1 * inst;
+    }
+  }
+  telemetry_.d.last_lidar_wall = now;
+  telemetry_.d.lidar_frames++;
+  telemetry_.d.lidar_queue = lidar_buffer_.size();
 }
 
 void LocalizationNode::imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr & msg_in)
@@ -93,6 +112,23 @@ void LocalizationNode::imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr & msg
     last_timestamp_imu_ = timestamp;
     imu_buffer_.push_back(msg);
   }
+
+  // Diagnostics: frame counters, rate EMA and queue depth.
+  const double now = steady_now_sec();
+  std::lock_guard<std::mutex> tlock(telemetry_.mtx);
+  if (telemetry_.d.last_imu_wall > 0.0)
+  {
+    const double dt = now - telemetry_.d.last_imu_wall;
+    if (dt > 1e-6)
+    {
+      const double inst = 1.0 / dt;
+      telemetry_.d.imu_hz =
+        telemetry_.d.imu_hz <= 0.0 ? inst : 0.9 * telemetry_.d.imu_hz + 0.1 * inst;
+    }
+  }
+  telemetry_.d.last_imu_wall = now;
+  telemetry_.d.imu_frames++;
+  telemetry_.d.imu_queue = imu_buffer_.size();
 }
 
 void LocalizationNode::initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)

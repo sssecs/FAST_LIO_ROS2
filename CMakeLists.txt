@@ -42,6 +42,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}   ${OpenMP_C_FLAGS}")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(diagnostic_updater REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -57,6 +58,7 @@ find_package(tf2_sensor_msgs REQUIRED)
 set(dependencies
   rclcpp
   rclcpp_lifecycle
+  diagnostic_updater
   geometry_msgs
   nav_msgs
   sensor_msgs
@@ -93,6 +95,7 @@ add_executable(fastlio_localization
   src/core/prior_map.cpp
   src/imu/imu_processing.cpp
   src/node/localization_node.cpp
+  src/node/diagnostics.cpp
   src/node/node_params.cpp
   src/node/processing.cpp
   src/node/publishers.cpp

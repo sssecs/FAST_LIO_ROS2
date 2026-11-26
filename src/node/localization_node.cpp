@@ -100,6 +100,8 @@ CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
   pub_path_ = create_publisher<nav_msgs::msg::Path>("/path", 20);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
+  setup_diagnostics();
+
   RCLCPP_INFO(get_logger(), "on_configure done.");
   return CallbackReturn::SUCCESS;
 }
@@ -200,6 +202,8 @@ CallbackReturn LocalizationNode::on_cleanup(const rclcpp_lifecycle::State &)
   localizer_ready_ = false;
   map_.reset();
   core_.reset();  // also clears the esekfom trampoline pointer
+  updater_.reset();
+  telemetry_.reset();
   initial_pose_set_.store(false);
   set_state(LocalizationState::kNoMap);
 

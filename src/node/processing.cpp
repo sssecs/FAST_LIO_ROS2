@@ -71,6 +71,16 @@ void LocalizationNode::timer_callback()
     {
       const auto scan_xyz = to_point_xyz(measures_.lidar);
       const auto res = localizer_.align(scan_xyz, T_map_base);
+      {
+        std::lock_guard<std::mutex> lock(telemetry_.mtx);
+        telemetry_.d.reloc_attempted = true;
+        telemetry_.d.reloc_accepted = res.success;
+        telemetry_.d.reloc_fitness = res.fitness;
+        telemetry_.d.reloc_rmse = res.rmse;
+        telemetry_.d.reloc_trans_delta = res.translation_delta;
+        telemetry_.d.reloc_rot_delta = res.rotation_delta;
+        telemetry_.d.reloc_ms = res.total_ms;
+      }
       if (res.success)
       {
         RCLCPP_INFO(
@@ -162,8 +172,13 @@ void LocalizationNode::timer_callback()
   const auto report = core_->localization_health_check(measures_.lidar_beg_time);
   if (!report.ok)
   {
+    {
+      std::lock_guard<std::mutex> lock(telemetry_.mtx);
+      telemetry_.d.scan_valid = true;
+      telemetry_.d.health = report;
+    }
     RCLCPP_WARN(
-      this->get_logger(),
+      get_logger(),
       "Localization FAILED: %s. map->base TF suppressed until a new initial pose.",
       report.describe().c_str());
     set_state(LocalizationState::kLost);
@@ -186,6 +201,17 @@ void LocalizationNode::timer_callback()
   if (params_.scan_publish_en) publish_frame_world();
   if (params_.scan_publish_en && params_.scan_bodyframe_pub_en) publish_frame_body();
   if (params_.effect_map_en) publish_effect_world();
+
+  /*** Diagnostics snapshot for the /diagnostics tasks ***/
+  {
+    std::lock_guard<std::mutex> lock(telemetry_.mtx);
+    telemetry_.d.scan_valid = true;
+    telemetry_.d.health = report;
+    telemetry_.d.feats_down = core_->feats_down_size();
+    telemetry_.d.effct_feat_num = core_->effct_feat_num();
+    telemetry_.d.res_mean = core_->res_mean_last();
+    telemetry_.d.scan_ms = (omp_get_wtime() - t0) * 1e3;
+  }
 
   /*** Debug: per-step time usage for this scan ***/
   if (params_.debug_time_usage)

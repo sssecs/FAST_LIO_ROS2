@@ -32,6 +32,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
+#include <diagnostic_updater/diagnostic_updater.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -50,6 +51,7 @@
 #include <fast_lio/core/prior_map.hpp>
 #include <fast_lio/imu/imu_processing.hpp>
 #include <fast_lio/node/localization_state.hpp>
+#include <fast_lio/node/telemetry.hpp>
 #include <fast_lio/preprocess/preprocess.hpp>
 #include <fast_lio/relocalization/open3d_localizer.hpp>
 
@@ -155,7 +157,24 @@ private:
   bool localizer_ready_ = false;  // set once the loaded map has been fed to localizer_
 
   // ---------------------------------------------------------------------------
-  // Callbacks (node/localization_node.cpp, node/processing.cpp)
+  // Diagnostics (node/diagnostics.cpp)
+  // ---------------------------------------------------------------------------
+  std::unique_ptr<diagnostic_updater::Updater> updater_;
+  Telemetry telemetry_;
+  void setup_diagnostics();
+  void fill_sensor_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  void fill_state_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  void fill_tracking_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  void fill_relocation_diagnostics(diagnostic_updater::DiagnosticStatusWrapper & stat);
+  static double steady_now_sec()
+  {
+    return std::chrono::duration<double>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Callbacks (node/sensor_callbacks.cpp, node/processing.cpp)
   // ---------------------------------------------------------------------------
   void timer_callback();
   void initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);

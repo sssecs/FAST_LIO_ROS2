@@ -20,6 +20,7 @@
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>diagnostic_updater</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
