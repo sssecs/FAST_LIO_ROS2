@@ -14,6 +14,8 @@ from launch_ros.events.lifecycle import ChangeState, matches_node_name
 from lifecycle_msgs.msg import Transition
 
 NODE_NAME = 'fastlio_localization'
+NODE_NS = '/TCT_Docent/locomotion/fastlio'
+NODE_FQN = NODE_NS + '/' + NODE_NAME
 
 
 def generate_launch_description():
@@ -53,7 +55,7 @@ def generate_launch_description():
         package='fast_lio',
         executable='fastlio_localization',
         name=NODE_NAME,
-        namespace='',
+        namespace=NODE_NS,
         parameters=[PathJoinSubstitution([config_path, config_file]),
                     {'use_sim_time': use_sim_time}],
         output='screen'
@@ -81,7 +83,7 @@ def generate_launch_description():
     # is up, activate as soon as it reports inactive (configured).
     configure_event = EmitEvent(
         event=ChangeState(
-            lifecycle_node_matcher=matches_node_name(node_name=NODE_NAME),
+            lifecycle_node_matcher=matches_node_name(node_name=NODE_FQN),
             transition_id=Transition.TRANSITION_CONFIGURE,
         )
     )
@@ -90,9 +92,9 @@ def generate_launch_description():
             target_lifecycle_node=fast_lio_node,
             goal_state='inactive',
             entities=[
-                LogInfo(msg='[lifecycle] {} configured, activating...'.format(NODE_NAME)),
+                LogInfo(msg='[lifecycle] {} configured, activating...'.format(NODE_FQN)),
                 EmitEvent(event=ChangeState(
-                    lifecycle_node_matcher=matches_node_name(node_name=NODE_NAME),
+                    lifecycle_node_matcher=matches_node_name(node_name=NODE_FQN),
                     transition_id=Transition.TRANSITION_ACTIVATE,
                 )),
             ],

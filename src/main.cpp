@@ -1,8 +1,9 @@
 // Entry point for the FAST-LIO localization node (ROS 2 Lifecycle).
 //
-// The node starts UNCONFIGURED; bring it up with:
-//   ros2 lifecycle set /fastlio_localization configure
-//   ros2 lifecycle set /fastlio_localization activate
+// The node lives in the /TCT_Docent/locomotion/fastlio namespace and starts
+// UNCONFIGURED; bring it up with:
+//   ros2 lifecycle set /TCT_Docent/locomotion/fastlio/fastlio_localization configure
+//   ros2 lifecycle set /TCT_Docent/locomotion/fastlio/fastlio_localization activate
 // (launch/localization.launch.py does this automatically).
 
 #include <memory>

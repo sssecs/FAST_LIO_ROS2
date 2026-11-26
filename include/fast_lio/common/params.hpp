@@ -49,7 +49,7 @@ struct Params
   std::string map_path;
   double init_z = 1.2;             // base_link height in the map for an initial pose
   double tf_lookup_timeout = 5.0;  // [s] to wait for the lidar->base static TF
-  std::string initial_pose_topic = "/initialpose";
+  std::string initial_pose_topic = "initialpose";  // relative: resolves under the node namespace
   // Open3D relocalization: refine the /initialpose guess by matching the
   // current scan against the loaded map before seeding the EKF.
   bool relocalization_en = true;

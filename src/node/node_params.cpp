@@ -48,7 +48,7 @@ void LocalizationNode::declare_params()
   this->declare_parameter<std::string>("localization.map_path", "");
   this->declare_parameter<double>("localization.init_z", 1.2);
   this->declare_parameter<double>("localization.tf_lookup_timeout", 5.0);
-  this->declare_parameter<std::string>("localization.initial_pose_topic", "/initialpose");
+  this->declare_parameter<std::string>("localization.initial_pose_topic", "initialpose");
   // Open3D relocalization
   this->declare_parameter<bool>("localization.relocalization.enable", true);
   this->declare_parameter<double>("localization.relocalization.voxel_size", 0.2);

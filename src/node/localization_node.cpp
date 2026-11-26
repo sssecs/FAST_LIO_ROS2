@@ -24,7 +24,8 @@ using CallbackReturn = LocalizationNode::CallbackReturn;
 // ---------------------------------------------------------------------------
 
 LocalizationNode::LocalizationNode(const rclcpp::NodeOptions & options)
-  : rclcpp_lifecycle::LifecycleNode("fastlio_localization", options)
+  : rclcpp_lifecycle::LifecycleNode(
+      "fastlio_localization", "/TCT_Docent/locomotion/fastlio", options)
 {
   preprocess_ = std::make_shared<Preprocess>();
   declare_params();
@@ -103,15 +104,17 @@ CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
     rmw_qos_profile_services_default, heavy_group_);
 
   // --- publishers (inactive until on_activate) --------------------------------
-  pub_laser_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered", 20);
-  pub_laser_cloud_full_body_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_registered_body", 20);
-  pub_laser_cloud_effect_ = create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
+  // Relative names resolve under the node namespace
+  // (/TCT_Docent/locomotion/fastlio).
+  pub_laser_cloud_full_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered", 20);
+  pub_laser_cloud_full_body_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_registered_body", 20);
+  pub_laser_cloud_effect_ = create_publisher<sensor_msgs::msg::PointCloud2>("cloud_effected", 20);
   // transient_local so RViz (which subscribes after the map was published once)
   // still receives the loaded map.
   pub_laser_cloud_map_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-    "/Laser_map", rclcpp::QoS(1).transient_local());
-  pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
-  pub_path_ = create_publisher<nav_msgs::msg::Path>("/path", 20);
+    "Laser_map", rclcpp::QoS(1).transient_local());
+  pub_odom_ = create_publisher<nav_msgs::msg::Odometry>("Odometry", 20);
+  pub_path_ = create_publisher<nav_msgs::msg::Path>("path", 20);
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
   setup_diagnostics();
