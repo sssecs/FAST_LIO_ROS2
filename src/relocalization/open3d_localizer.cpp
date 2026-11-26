@@ -10,7 +10,7 @@
 //  Compatible with the system Open3D 0.14 (RemoveNonFinitePoints is in-place;
 //  RegistrationRANSACBasedOnFeatureMatching's `seed` argument is optional).
 // -----------------------------------------------------------------------------
-#include <fast_lio/open3d_localizer.hpp>
+#include <fast_lio/relocalization/open3d_localizer.hpp>
 
 #include <chrono>
 

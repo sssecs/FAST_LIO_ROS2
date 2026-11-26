@@ -7,14 +7,13 @@
 #pragma once
 
 #include <deque>
-#include <fstream>
 #include <vector>
 
 #include <Eigen/Eigen>
 #include <sensor_msgs/msg/imu.hpp>
 
-#include <common_lib.h>
-#include <use-ikfom.hpp>
+#include <fast_lio/common/common_lib.h>
+#include <fast_lio/common/use-ikfom.hpp>
 
 class ImuProcess
 {
@@ -39,7 +38,6 @@ public:
     const MeasureGroup & meas, esekfom::esekf<state_ikfom, 12, input_ikfom> & kf_state,
     PointCloudXYZI::Ptr pcl_un_);
 
-  std::ofstream fout_imu;
   V3D cov_acc;
   V3D cov_gyr;
   V3D cov_acc_scale;

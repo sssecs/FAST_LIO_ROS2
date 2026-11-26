@@ -1,4 +1,4 @@
-// IMU Process and undistortion (implementation) — see IMU_Processing.hpp.
+// IMU Process and undistortion (implementation) — see imu_processing.hpp.
 
 #include <cassert>
 #include <cmath>
@@ -9,10 +9,10 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
-#include <common_lib.h>
-#include <use-ikfom.hpp>
-#include <fast_lio/IMU_Processing.hpp>
-#include <fast_lio/preprocess.hpp>
+#include <fast_lio/common/common_lib.h>
+#include <fast_lio/common/use-ikfom.hpp>
+#include <fast_lio/imu/imu_processing.hpp>
+#include <fast_lio/preprocess/preprocess.hpp>
 
 #define MAX_INI_COUNT (10)
 
@@ -276,7 +276,6 @@ void ImuProcess::Process(const MeasureGroup & meas, esekfom::esekf<state_ikfom, 
       cov_acc = cov_acc_scale;
       cov_gyr = cov_gyr_scale;
       std::cout << "IMU Initial Done" << std::endl;
-      fout_imu.open(DEBUG_FILE_DIR("imu.txt"), std::ios::out);
     }
 
     return;

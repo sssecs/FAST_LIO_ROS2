@@ -12,8 +12,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -pthread -fexceptions")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fexceptions")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
-
 message("Current CPU archtecture: ${CMAKE_SYSTEM_PROCESSOR}")
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
@@ -47,7 +45,6 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -62,7 +59,6 @@ set(dependencies
   nav_msgs
   sensor_msgs
   std_msgs
-  std_srvs
   pcl_ros
   pcl_conversions
   tf2
@@ -89,31 +85,34 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 ament_export_dependencies(rosidl_default_runtime)
 
-add_executable(fastlio_mapping
+add_executable(fastlio_localization
   src/main.cpp
-  src/laser_mapping.cpp
-  src/laser_mapping_core.cpp
-  src/preprocess.cpp
-  src/IMU_Processing.cpp
-  src/open3d_localizer.cpp
-  include/ikd-Tree/ikd_Tree.cpp
+  src/core/localization_core.cpp
+  src/core/prior_map.cpp
+  src/imu/imu_processing.cpp
+  src/node/localization_node.cpp
+  src/node/node_params.cpp
+  src/node/processing.cpp
+  src/node/publishers.cpp
+  src/preprocess/preprocess.cpp
+  src/relocalization/open3d_localizer.cpp
 )
-target_include_directories(fastlio_mapping PUBLIC
+target_include_directories(fastlio_localization PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
   ${Open3D_INCLUDE_DIRS}
 )
-target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} Eigen3::Eigen ${Open3D_LIBRARIES})
+target_link_libraries(fastlio_localization ${PCL_LIBRARIES} Eigen3::Eigen ${Open3D_LIBRARIES})
 
 rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(fastlio_mapping ${cpp_typesupport_target})
+target_link_libraries(fastlio_localization ${cpp_typesupport_target})
 
-ament_target_dependencies(fastlio_mapping ${dependencies})
+ament_target_dependencies(fastlio_localization ${dependencies})
 
 # ---------------- Install --------------- #
-install(TARGETS fastlio_mapping
+install(TARGETS fastlio_localization
   DESTINATION lib/${PROJECT_NAME}
 )
 

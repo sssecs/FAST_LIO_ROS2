@@ -6,7 +6,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-#include <fast_lio/laser_mapping.hpp>
+#include <fast_lio/node/localization_node.hpp>
 
 namespace
 {
@@ -28,10 +28,10 @@ int main(int argc, char ** argv)
 
   try
   {
-    // The node throws std::runtime_error when required configuration (e.g. the
-    // static lidar -> base TF) is missing at startup, so exit cleanly instead
-    // of terminating. Shutdown-time map / log saving happens in the destructor.
-    rclcpp::spin(std::make_shared<fast_lio::LaserMappingNode>());
+    // The node throws std::runtime_error when required configuration (the
+    // static lidar -> base TF or the prior map) is missing at startup, so exit
+    // cleanly instead of terminating.
+    rclcpp::spin(std::make_shared<fast_lio::LocalizationNode>());
   }
   catch (const std::runtime_error & ex)
   {
