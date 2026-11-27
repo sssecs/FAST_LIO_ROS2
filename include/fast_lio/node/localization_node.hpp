@@ -238,6 +238,12 @@ private:
   // Callbacks (node/sensor_callbacks.cpp, node/processing.cpp)
   // ---------------------------------------------------------------------------
   void timer_callback();
+  // Main-loop guards, one per LocalizationState; the early-return order in
+  // timer_callback() is the precedence of this flattened state machine.
+  bool try_handle_initial_pose_seed();    // pending /initialpose, ~/relocalize or switch seed
+  bool hold_waiting_for_initial_pose();   // kUnlocalized
+  bool hold_if_lost();                    // kLost
+  void process_one_scan();                // kVerifying / kTracking
   void initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg);
   void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr & msg);
   void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr & msg_in);
