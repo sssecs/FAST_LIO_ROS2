@@ -67,8 +67,12 @@
             # the robot starts moving immediately after a re-seed.)
             relocalization_verify_en: true          # check the pose stays put after a re-seed
             relocalization_verify_window: 2.0       # [s] verification window after the re-seed
-            relocalization_verify_max_drift: 0.1    # [m] max allowed straight-line drift from the re-seeded position
-            relocalization_verify_max_path: 0.2     # [m] max total path the pose may travel during the window
+            # The bounds below must tolerate the normal first-update settling
+            # of a freshly seeded filter (real-lidar cold start shifts ~0.1 m
+            # while the biases converge); 0.1 m falsely failed those. 1.0/2.0
+            # still catch a true fly-away (a wrong match drifts far and fast).
+            relocalization_verify_max_drift: 1.0    # [m] max allowed straight-line drift from the re-seeded position
+            relocalization_verify_max_path: 2.0     # [m] max total path the pose may travel during the window
 
             # Open3D relocalization: on /initialpose the current scan is matched
             # against the loaded map (FPFH+RANSAC coarse, multiscale-ICP fine) and
@@ -88,6 +92,6 @@
                 filter_std_ratio: 3.0
                 crop_radius: 50.0          # crop the map target to ±crop_radius m around the guess (0 = off)
                 # Validity thresholds: a match is accepted only if ALL pass.
-                min_fitness: 0.8           # min overlap ratio of the accepted match (0..1)
+                min_fitness: 0.5           # min overlap ratio of the accepted match (0..1)
                 max_translation_delta: 5.0 # max correction from the initial guess [m]
                 max_rotation_delta: 2.0    # max correction from the initial guess [rad]
