@@ -86,6 +86,7 @@ set(msg_files
 
 set(srv_files
   "srv/SwitchMap.srv"
+  "srv/Relocalize.srv"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -105,6 +106,7 @@ add_executable(fastlio_localization
   src/node/node_params.cpp
   src/node/processing.cpp
   src/node/publishers.cpp
+  src/node/relocalize.cpp
   src/node/sensor_callbacks.cpp
   src/node/switch_map.cpp
   src/preprocess/preprocess.cpp

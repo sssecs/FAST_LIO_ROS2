@@ -17,13 +17,16 @@
 //
 // Localization flow:
 //   1. configure: load a downsampled PCD map into a PriorMap,
-//   2. activate: wait for an initial pose on /initialpose,
+//   2. activate: wait for an initial pose — RViz "2D Pose Estimate" on the
+//      /initialpose topic, or any client of the ~/relocalize service,
 //   3. refine it against the map with the Open3D relocalizer,
 //   4. run the standard FAST-LIO update against the (static) map.
 
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -54,6 +57,7 @@
 #include <fast_lio/node/telemetry.hpp>
 #include <fast_lio/preprocess/preprocess.hpp>
 #include <fast_lio/relocalization/open3d_localizer.hpp>
+#include <fast_lio/srv/relocalize.hpp>
 #include <fast_lio/srv/switch_map.hpp>
 
 namespace fast_lio
@@ -131,11 +135,14 @@ private:
   // ---------------------------------------------------------------------------
   // Concurrency. The node runs on a MultiThreadedExecutor with three callback
   // groups: sensor subscriptions (sub_group_), the 100 Hz main loop
-  // (main_group_) and the heavy map-switch service (heavy_group_); the default
-  // group carries lifecycle, diagnostics and /initialpose. pipeline_mtx_
-  // serializes every touch of core_/localizer_ (whole timer body vs. the short
-  // map-swap section), so a long Open3D alignment only delays a pending map
-  // swap, never corrupts state. Buffers stay under mtx_buffer_.
+  // (main_group_) and the heavy services (heavy_group_: map switch and
+  // relocalize); the default group carries lifecycle, diagnostics and the
+  // /initialpose topic. pipeline_mtx_ serializes every touch of
+  // core_/localizer_ (whole timer body vs. the short map-swap section), so a
+  // long Open3D alignment only delays a pending map switch, never corrupts
+  // state. The relocalize service blocks on reloc_cv_ (never on
+  // pipeline_mtx_) while the main loop runs the alignment. Buffers stay under
+  // mtx_buffer_.
   // ---------------------------------------------------------------------------
   rclcpp::CallbackGroup::SharedPtr sub_group_;
   rclcpp::CallbackGroup::SharedPtr main_group_;
@@ -146,6 +153,27 @@ private:
   void switch_map_cbk(
     const std::shared_ptr<fast_lio::srv::SwitchMap::Request> req,
     std::shared_ptr<fast_lio::srv::SwitchMap::Response> res);
+
+  // Synchronous relocalization server (node/relocalize.cpp). Feeds the same
+  // single-slot initial-pose queue as the /initialpose topic, then blocks on
+  // reloc_cv_ until the main loop reports the scan-matching outcome. A
+  // sequence number pairs each request with the outcome of the seed the main
+  // loop actually consumed (the topic can overwrite the slot in between —
+  // newest request wins, same as before).
+  rclcpp::Service<fast_lio::srv::Relocalize>::SharedPtr relocalize_srv_;
+  std::mutex reloc_mtx_;
+  std::condition_variable reloc_cv_;
+  uint64_t reloc_req_seq_ = 0;    // last request queued (guarded by reloc_mtx_)
+  uint64_t reloc_done_seq_ = 0;   // outcome recorded for reloc_req_seq_ (ditto)
+  bool reloc_waiter_ = false;     // a service call is blocked waiting (ditto)
+  fast_lio::srv::Relocalize::Response reloc_outcome_;  // last outcome (ditto)
+  void relocalize_cbk(
+    const std::shared_ptr<fast_lio::srv::Relocalize::Request> req,
+    std::shared_ptr<fast_lio::srv::Relocalize::Response> res);
+  // Called from the main loop's re-init branch with the sequence captured when
+  // the seed was consumed; no-op for seq 0 (topic- or switch-queued seeds).
+  void complete_pending_reloc(uint64_t seq, fast_lio::srv::Relocalize::Response outcome);
+  static geometry_msgs::msg::Pose matrix_to_pose(const Eigen::Matrix4d & T);
 
   // ---------------------------------------------------------------------------
   // ROS handles. Publishers are created in on_configure and only publish while
@@ -171,8 +199,10 @@ private:
   // Localization state
   // ---------------------------------------------------------------------------
   std::atomic<LocalizationState> state_{LocalizationState::kNoMap};
-  // True when a fresh /initialpose is waiting to be consumed by the re-init
-  // branch in timer_callback(). init_pose_ itself is guarded by init_pose_mtx_.
+  // True when a fresh initial pose (from the /initialpose topic, the
+  // ~/relocalize service or a map switch) is waiting to be consumed by the
+  // re-init branch in timer_callback(). init_pose_ itself is guarded by
+  // init_pose_mtx_.
   std::atomic<bool> initial_pose_set_{false};
   // True when the queued initial pose comes from a seamless map switch and
   // must seed the EKF directly, skipping the scan-matching relocalization.

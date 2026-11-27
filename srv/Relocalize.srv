@@ -1,0 +1,20 @@
+# Request a relocalization at the given initial pose. Same semantics as
+# publishing to the /initialpose topic, but synchronous: the caller blocks
+# until the Open3D scan matching against the loaded map has run and the EKF
+# has (or has not) been seeded. The topic interface stays available; both
+# feed the same single-slot initial-pose queue, so the newest request wins.
+#
+# Note: z of initial_pose is replaced by the node's init_z, exactly like the
+# topic interface.
+
+geometry_msgs/PoseWithCovarianceStamped initial_pose  # guess in the map frame
+---
+bool success                    # true: the EKF was seeded with the pose below
+string message                  # human-readable outcome
+geometry_msgs/Pose refined_pose  # pose actually seeded into the EKF on success
+                                 # (scan-matching refined, or the raw guess when
+                                 # matching was skipped/unavailable)
+float64 fitness                 # Open3D overlap ratio of the accepted match (0..1)
+float64 rmse                    # point-to-plane RMSE of the accepted match [m]
+float64 translation_correction  # |refined - request guess| [m]
+float64 rotation_correction     # |refined - request guess| [rad]

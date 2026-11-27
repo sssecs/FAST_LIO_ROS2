@@ -4,6 +4,8 @@
 
 #include <fast_lio/node/localization_node.hpp>
 
+#include <cstdio>
+
 #include <omp.h>
 
 namespace
@@ -55,11 +57,22 @@ void LocalizationNode::timer_callback()
   }
 
   // First synchronized scan after a (re-)initial pose: (re-)initialize the
-  // filter with the pose received on /initialpose.
+  // filter with the pose received on /initialpose or the ~/relocalize service.
   if (initial_pose_set_.load())
   {
-    // Initial guess: T_map_base built from the RViz /initialpose click
-    // (a 2D click — z is forced to the configured init_z height).
+    // If a relocalize service call queued this seed, remember its sequence
+    // number so the outcome below is handed back to that blocked caller.
+    uint64_t reloc_seq = 0;
+    {
+      std::lock_guard<std::mutex> lock(reloc_mtx_);
+      if (reloc_waiter_)
+      {
+        reloc_seq = reloc_req_seq_;
+      }
+    }
+
+    // Initial guess: T_map_base built from the queued pose (a 2D click or a
+    // service request — z is forced to the configured init_z height).
     geometry_msgs::msg::PoseWithCovarianceStamped init_pose;
     {
       std::lock_guard<std::mutex> lock(init_pose_mtx_);
@@ -67,6 +80,16 @@ void LocalizationNode::timer_callback()
     }
     Eigen::Matrix4d T_map_base = initial_pose_to_matrix(init_pose, init_z_);
     const bool seamless = seamless_seed_.exchange(false);
+
+    // Outcome of this re-init, reported to the pending relocalize service
+    // call (if any). complete_pending_reloc() is a no-op for seq 0, so the
+    // topic and map-switch paths are unaffected.
+    fast_lio::srv::Relocalize::Response reloc_res;
+    auto finish_reloc = [&](bool success, const std::string & message) {
+      reloc_res.success = success;
+      reloc_res.message = message;
+      complete_pending_reloc(reloc_seq, reloc_res);
+    };
 
     // Seamless map switch with a live filter: the cross-map pose is trusted,
     // so only the pose is replaced — the converged IMU state (velocity,
@@ -82,6 +105,8 @@ void LocalizationNode::timer_callback()
       RCLCPP_INFO(
         get_logger(),
         "Seamless map switch: pose reseeded directly (IMU state kept, no scan matching).");
+      reloc_res.refined_pose = matrix_to_pose(T_map_base);
+      finish_reloc(true, "seamless pose seed (no scan matching)");
       return;
     }
 
@@ -97,6 +122,8 @@ void LocalizationNode::timer_callback()
     // Exception: a seamless seed (filter not yet initialized, e.g. right after
     // the first activation) is still trusted and skips the scan matching.
     bool match_ok = false;
+    fast_lio::AlignResult align_res;  // valid only when align_attempted
+    bool align_attempted = false;
     if (seamless)
     {
       RCLCPP_INFO(
@@ -108,26 +135,27 @@ void LocalizationNode::timer_callback()
     else if (localizer_ready_ && localizer_ && !measures_.lidar->empty())
     {
       const auto scan_xyz = to_point_xyz(measures_.lidar);
-      const auto res = localizer_->align(scan_xyz, T_map_base);
+      align_res = localizer_->align(scan_xyz, T_map_base);
+      align_attempted = true;
       {
         std::lock_guard<std::mutex> lock(telemetry_.mtx);
         telemetry_.d.reloc_attempted = true;
-        telemetry_.d.reloc_accepted = res.success;
-        telemetry_.d.reloc_fitness = res.fitness;
-        telemetry_.d.reloc_rmse = res.rmse;
-        telemetry_.d.reloc_trans_delta = res.translation_delta;
-        telemetry_.d.reloc_rot_delta = res.rotation_delta;
-        telemetry_.d.reloc_ms = res.total_ms;
+        telemetry_.d.reloc_accepted = align_res.success;
+        telemetry_.d.reloc_fitness = align_res.fitness;
+        telemetry_.d.reloc_rmse = align_res.rmse;
+        telemetry_.d.reloc_trans_delta = align_res.translation_delta;
+        telemetry_.d.reloc_rot_delta = align_res.rotation_delta;
+        telemetry_.d.reloc_ms = align_res.total_ms;
       }
-      if (res.success)
+      if (align_res.success)
       {
         RCLCPP_INFO(
           this->get_logger(),
           "Relocalization accepted: fitness %.3f, correction %.2f m / %.2f rad "
           "(%.0f ms, scan %zu pts).",
-          res.fitness, res.translation_delta, res.rotation_delta, res.total_ms,
-          res.scan_points);
-        T_map_base = res.transform;
+          align_res.fitness, align_res.translation_delta, align_res.rotation_delta, align_res.total_ms,
+          align_res.scan_points);
+        T_map_base = align_res.transform;
         match_ok = true;
       }
       else
@@ -136,7 +164,7 @@ void LocalizationNode::timer_callback()
           this->get_logger(),
           "Relocalization rejected (fitness %.3f, correction %.2f m / %.2f rad, "
           "scan %zu pts); not seeding the EKF.",
-          res.fitness, res.translation_delta, res.rotation_delta, res.scan_points);
+          align_res.fitness, align_res.translation_delta, align_res.rotation_delta, align_res.scan_points);
       }
     }
     else if (!localizer_ready_)
@@ -153,11 +181,24 @@ void LocalizationNode::timer_callback()
       core_->set_localization_failed(true);
       initial_pose_set_.store(false);
       set_state(LocalizationState::kLost);
+      char buf[160];
+      snprintf(
+        buf, sizeof(buf), "relocalization rejected (fitness %.3f, correction %.2f m / %.2f rad)",
+        align_res.fitness, align_res.translation_delta, align_res.rotation_delta);
       RCLCPP_WARN(
         this->get_logger(),
         "Relocalization did not produce a trusted pose; localization stays "
         "stopped until a new %s is received.",
         params_.initial_pose_topic.c_str());
+      reloc_res.refined_pose = matrix_to_pose(T_map_base);  // the raw guess
+      if (align_attempted)
+      {
+        reloc_res.fitness = align_res.fitness;
+        reloc_res.rmse = align_res.rmse;
+        reloc_res.translation_correction = align_res.translation_delta;
+        reloc_res.rotation_correction = align_res.rotation_delta;
+      }
+      finish_reloc(false, buf);
       return;
     }
 
@@ -167,6 +208,28 @@ void LocalizationNode::timer_callback()
 
     initial_pose_set_.store(false);
     set_state(core_->verifying() ? LocalizationState::kVerifying : LocalizationState::kTracking);
+
+    reloc_res.refined_pose = matrix_to_pose(T_map_base);
+    if (align_attempted)
+    {
+      reloc_res.fitness = align_res.fitness;
+      reloc_res.rmse = align_res.rmse;
+      reloc_res.translation_correction = align_res.translation_delta;
+      reloc_res.rotation_correction = align_res.rotation_delta;
+      char buf[160];
+      snprintf(
+        buf, sizeof(buf), "localized (fitness %.3f, correction %.2f m / %.2f rad)",
+        align_res.fitness, align_res.translation_delta, align_res.rotation_delta);
+      finish_reloc(true, buf);
+    }
+    else if (seamless)
+    {
+      finish_reloc(true, "seeded with trusted seamless pose (no scan matching)");
+    }
+    else
+    {
+      finish_reloc(true, "seeded with raw guess (relocalizer unavailable)");
+    }
     return;
   }
 

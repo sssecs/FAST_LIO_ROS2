@@ -8,7 +8,8 @@
 //   on_cleanup     release everything (map, core, ROS handles).
 //
 // Sensor callbacks live in node/sensor_callbacks.cpp, per-scan orchestration
-// in node/processing.cpp and publishing helpers in node/publishers.cpp.
+// in node/processing.cpp, the relocalize service in node/relocalize.cpp and
+// publishing helpers in node/publishers.cpp.
 
 #include <fast_lio/node/localization_node.hpp>
 
@@ -103,6 +104,13 @@ CallbackReturn LocalizationNode::on_configure(const rclcpp_lifecycle::State &)
       &LocalizationNode::switch_map_cbk, this, std::placeholders::_1, std::placeholders::_2),
     rmw_qos_profile_services_default, heavy_group_);
 
+  // --- relocalization service (available from INACTIVE on) ---------------------
+  relocalize_srv_ = create_service<fast_lio::srv::Relocalize>(
+    "~/relocalize",
+    std::bind(
+      &LocalizationNode::relocalize_cbk, this, std::placeholders::_1, std::placeholders::_2),
+    rmw_qos_profile_services_default, heavy_group_);
+
   // --- publishers (inactive until on_activate) --------------------------------
   // Relative names resolve under the node namespace
   // (/TCT_Docent/locomotion/fastlio).
@@ -191,6 +199,15 @@ CallbackReturn LocalizationNode::on_deactivate(const rclcpp_lifecycle::State &)
   sub_imu_.reset();
   sub_init_pose_.reset();
   clear_buffers();
+  // Unblock a relocalize service call waiting on the (now stopped) main loop.
+  {
+    std::lock_guard<std::mutex> lock(reloc_mtx_);
+    reloc_outcome_.success = false;
+    reloc_outcome_.message = "node deactivated";
+    reloc_done_seq_ = reloc_req_seq_;
+    reloc_waiter_ = false;
+  }
+  reloc_cv_.notify_all();
   // Wait out any in-flight main-loop iteration before reporting inactive.
   {
     std::lock_guard<std::mutex> lock(pipeline_mtx_);
@@ -218,6 +235,15 @@ CallbackReturn LocalizationNode::on_cleanup(const rclcpp_lifecycle::State &)
   sub_imu_.reset();
   sub_init_pose_.reset();
   switch_map_srv_.reset();
+  relocalize_srv_.reset();
+  {
+    std::lock_guard<std::mutex> lock(reloc_mtx_);
+    reloc_outcome_.success = false;
+    reloc_outcome_.message = "node cleaned up";
+    reloc_done_seq_ = reloc_req_seq_;
+    reloc_waiter_ = false;
+  }
+  reloc_cv_.notify_all();
   clear_buffers();
 
   pub_laser_cloud_full_.reset();

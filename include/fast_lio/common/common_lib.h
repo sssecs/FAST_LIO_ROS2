@@ -5,6 +5,7 @@
 #define FAST_LIO_COMMON_COMMON_LIB_H
 
 #include <deque>
+#include <limits>
 #include <rclcpp/rclcpp.hpp>
 #include <fast_lio/common/so3_math.h>
 #include <Eigen/Eigen>
@@ -65,30 +66,48 @@ auto set_pose6d(
 }
 
 /* Fit a plane Ax + By + Cz + D = 0 through NUM_MATCH_POINTS points.
-   Returns false when any point lies farther than `threshold` from the plane. */
+   Returns false when any point lies farther than `threshold` from the plane.
+   The normal is the smallest-eigenvalue eigenvector of the neighbors'
+   covariance (fit in centroid-centered coordinates): an explicit origin
+   offset — as in the old A n = -1 solve — degenerates whenever the plane
+   passes through (or extremely close to) the map frame origin, e.g. a floor
+   saved exactly at z = 0, and produced garbage fits or NaN normals. */
 template <typename T>
 bool esti_plane(Matrix<T, 4, 1> & pca_result, const PointVector & point, const T & threshold)
 {
-  Matrix<T, NUM_MATCH_POINTS, 3> A;
-  Matrix<T, NUM_MATCH_POINTS, 1> b;
-  A.setZero();
-  b.setOnes();
-  b *= -1.0f;
-
-  for (int j = 0; j < NUM_MATCH_POINTS; j++)
+  Matrix<T, 3, 1> centroid(0, 0, 0);
+  for (const auto & p : point)
   {
-    A(j, 0) = point[j].x;
-    A(j, 1) = point[j].y;
-    A(j, 2) = point[j].z;
+    centroid += Matrix<T, 3, 1>(p.x, p.y, p.z);
+  }
+  centroid /= static_cast<T>(point.size());
+
+  Matrix<T, 3, 3> cov;
+  cov.setZero();
+  for (const auto & p : point)
+  {
+    const Matrix<T, 3, 1> q(p.x - centroid(0), p.y - centroid(1), p.z - centroid(2));
+    cov += q * q.transpose();
   }
 
-  Matrix<T, 3, 1> normvec = A.colPivHouseholderQr().solve(b);
+  SelfAdjointEigenSolver<Matrix<T, 3, 3>> es(cov);
+  if (es.info() != Success)
+  {
+    return false;
+  }
+  // Reject coincident/collinear neighborhoods: the middle eigenvalue must
+  // carry real in-plane spread, otherwise the normal direction is arbitrary.
+  const T eval_middle = es.eigenvalues()(1);
+  if (eval_middle < std::numeric_limits<T>::epsilon())
+  {
+    return false;
+  }
 
-  T n = normvec.norm();
-  pca_result(0) = normvec(0) / n;
-  pca_result(1) = normvec(1) / n;
-  pca_result(2) = normvec(2) / n;
-  pca_result(3) = 1.0 / n;
+  const Matrix<T, 3, 1> n = es.eigenvectors().col(0);
+  pca_result(0) = n(0);
+  pca_result(1) = n(1);
+  pca_result(2) = n(2);
+  pca_result(3) = -n.dot(centroid);
 
   for (int j = 0; j < NUM_MATCH_POINTS; j++)
   {
